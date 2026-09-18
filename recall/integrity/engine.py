@@ -271,16 +271,15 @@ def run_all_checks(conn, settings, *, checks: set[str] | None = None) -> dict[st
 
     ``checks`` selects families: corrupt, gaps, accounts, quality.
     """
-    from .accounts import account_checks
-    from .coverage import coverage_checks
-    from .quality import quality_checks
-    from .sources import source_checks
+    from importlib import import_module
 
+    # (family name, module, function). Imported one at a time so a single
+    # broken or missing check family never costs the user the other three.
     families = {
-        "corrupt": source_checks,
-        "gaps": coverage_checks,
-        "accounts": account_checks,
-        "quality": quality_checks,
+        "corrupt": ("sources", "source_checks"),
+        "gaps": ("coverage", "coverage_checks"),
+        "accounts": ("accounts", "account_checks"),
+        "quality": ("quality", "quality_checks"),
     }
     wanted = checks or set(families)
     unknown = wanted - set(families)
@@ -290,14 +289,18 @@ def run_all_checks(conn, settings, *, checks: set[str] | None = None) -> dict[st
             f"Choose from: {', '.join(sorted(families))}"
         )
 
+    from ..db import log_error
+
     results: dict[str, int] = {}
     for name in sorted(wanted):
+        module_name, func_name = families[name]
         try:
-            results[name] = families[name](conn, settings)
+            module = import_module(f".{module_name}", package=__package__)
+            results[name] = getattr(module, func_name)(conn, settings)
         except Exception as exc:  # noqa: BLE001 - one broken check never stops the rest
-            from ..db import log_error
-
-            log_error(conn, "integrity", f"Check family {name!r} failed: {exc}", detail=repr(exc))
+            log_error(
+                conn, "integrity", f"The {name} checks could not run: {exc}", detail=repr(exc)
+            )
             log.exception("Integrity check family %s failed", name)
             results[name] = -1
     return results

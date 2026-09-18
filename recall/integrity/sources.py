@@ -37,7 +37,9 @@ _MIN_PLAUSIBLE: dict[str, int] = {
     ".ost": 256 * 1024,
     ".dbx": 2 * 1024,
     ".mbx": 1024,
-    ".olm": 1024,
+    # A zip's own end-of-central-directory record is 22 bytes, so a valid .olm
+    # holding one short message really can be a few hundred bytes.
+    ".olm": 256,
     ".wab": 512,
     ".pab": 512,
     ".msg": 512,

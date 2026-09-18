@@ -146,6 +146,103 @@ def scan(
 
 
 @app.command()
+def extract(
+    kinds: str = typer.Option(
+        None,
+        "--kinds",
+        help="What to read: calendar, contacts, mail, tasks, notes. "
+        "Separate several with commas. The default is everything.",
+    ),
+    sources: str = typer.Option(
+        None,
+        "--sources",
+        help="Only these files, by the id shown on the Files found screen. "
+        "Separate several with commas.",
+    ),
+    sample: int = typer.Option(
+        0,
+        "--sample",
+        help="Read only the first N records from each file. A quick way to check "
+        "everything works before starting a long run.",
+    ),
+    resume: bool = typer.Option(
+        True,
+        "--resume/--restart",
+        help="--resume skips files already read. --restart reads every chosen "
+        "file again; nothing is duplicated either way.",
+    ),
+) -> None:
+    """Read your Outlook files into the archive. Stop any time with Ctrl-C."""
+    import threading
+
+    from .db import connect
+    from .extract import Extractor, parse_kinds
+
+    settings = _settings()
+
+    try:
+        wanted = parse_kinds(kinds)
+    except ValueError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+
+    source_ids = None
+    if sources:
+        try:
+            source_ids = [int(s.strip()) for s in sources.split(",") if s.strip()]
+        except ValueError as exc:
+            typer.secho(
+                "--sources takes the numbers shown on the Files found screen, "
+                f"for example --sources 3,7,12. Got: {sources!r}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2) from exc
+
+    cancel = threading.Event()
+    last_line = {"text": ""}
+
+    def show(progress) -> None:
+        line = (
+            f"  {progress.files_done}/{progress.files_total} files  "
+            f"{progress.items_written:,} records  "
+            f"{progress.items_per_sec:,.0f}/sec  "
+            f"{Path(progress.current_file).name}"
+        )
+        if line != last_line["text"]:
+            typer.echo(line[:140].ljust(len(last_line["text"])), nl=False)
+            typer.echo("\r", nl=False)
+            last_line["text"] = line
+
+    conn = connect(settings.db_path)
+    extractor = Extractor(settings, conn, cancel=cancel, on_progress=show)
+
+    typer.echo(f"Reading: {', '.join(sorted(wanted))}")
+    if sample:
+        typer.echo(f"Sampling the first {sample} records from each file.")
+    typer.echo("Press Ctrl-C at any time. Everything read so far is kept.")
+    typer.echo("")
+
+    try:
+        result = extractor.run(
+            kinds=wanted, source_ids=source_ids, sample=sample, resume=resume
+        )
+    except KeyboardInterrupt:
+        cancel.set()
+        result = extractor.progress
+        typer.echo("")
+        typer.echo("Stopping cleanly...")
+    finally:
+        conn.close()
+
+    typer.echo("")
+    typer.echo(result.message or "Finished.")
+    for path, reason in result.failures:
+        typer.secho(f"  could not read {path}: {reason}", fg=typer.colors.YELLOW)
+    raise typer.Exit(code=0 if result.state in ("done", "canceled") else 1)
+
+
+@app.command()
 def serve(
     port: int = typer.Option(None, "--port", "-p", help="Which port to listen on."),
     open_browser: bool = typer.Option(
