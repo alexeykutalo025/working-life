@@ -411,12 +411,29 @@ def test_summary_counts_what_it_can_count(tmp_path: Path, scan_settings, conn):
 
 
 def test_summary_mentions_duplicates(tmp_path: Path, scan_settings, conn):
+    """One duplicate reads as one, not as "1 are duplicates".
+
+    The summary is the first sentence the user reads, and broken grammar there
+    makes the whole thing look like it was written by a machine that is not
+    paying attention.
+    """
     root = tmp_path / "data"
     root.mkdir()
     (root / "a.pst").write_bytes(PST_HEADER)
     (root / "bb.pst").write_bytes(PST_HEADER)
     Scanner(scan_settings, conn).run([root])
-    assert "1 are duplicates" in summarize(conn) or "duplicates" in summarize(conn)
+    assert "1 is a duplicate of another file" in summarize(conn)
+
+
+def test_summary_counts_several_duplicates_in_the_plural(
+    tmp_path: Path, scan_settings, conn
+):
+    root = tmp_path / "data"
+    root.mkdir()
+    for name in ("a.pst", "bb.pst", "ccc.pst"):
+        (root / name).write_bytes(PST_HEADER)
+    Scanner(scan_settings, conn).run([root])
+    assert "2 are duplicates of another file" in summarize(conn)
 
 
 def test_summary_reports_uncompared_files_honestly(tmp_path: Path, scan_settings, conn):

@@ -61,6 +61,12 @@ export const api = {
   startScan: (roots, fullHash = false) =>
     request('/api/scan', { method: 'POST', body: JSON.stringify({ roots, full_hash: fullHash }) }),
   job: () => request('/api/job'),
+
+  extractPlan: (ids) =>
+    request('/api/extract/plan' + (ids && ids.length ? `?ids=${ids.join(',')}` : '')),
+  startExtract: (options) =>
+    request('/api/extract', { method: 'POST', body: JSON.stringify(options) }),
+
   cancelJob: () => request('/api/job/cancel', { method: 'POST' }),
 
   sources: (params = {}) => {

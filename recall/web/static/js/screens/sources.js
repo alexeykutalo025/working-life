@@ -134,6 +134,11 @@ function renderControls() {
         onclick: openDriveChooser,
       }, 'Find Outlook files on this computer'),
       el('button', {
+        class: 'btn btn--big',
+        type: 'button',
+        onclick: () => openReadDialog(null),
+      }, 'Read them into the archive'),
+      el('button', {
         class: 'btn',
         type: 'button',
         onclick: async () => { await refreshSummary(); await refreshTable(); },
@@ -295,6 +300,113 @@ function mountModalError(err) {
   });
 }
 
+// --- reading files into the archive ---------------------------------------
+
+async function openReadDialog(ids) {
+  let plan;
+  try {
+    plan = await api.extractPlan(ids);
+  } catch (err) {
+    mountModalError(err);
+    return;
+  }
+
+  if (!plan.to_read && !plan.already_read) {
+    mountModalError(new Error(
+      'There is nothing to read. Search for Outlook files first.'));
+    return;
+  }
+
+  const sample = el('input', { type: 'checkbox' });
+  const kinds = el('select', {},
+    el('option', { value: '' }, 'Everything — mail, calendar and contacts'),
+    el('option', { value: 'mail' }, 'Mail only'),
+    el('option', { value: 'calendar' }, 'Calendar only'),
+    el('option', { value: 'contacts' }, 'Contacts only'),
+  );
+  const again = el('input', { type: 'checkbox' });
+
+  const warnings = [];
+  if (plan.cloud_only) {
+    warnings.push(notice('info',
+      `${plural(plan.cloud_only, 'file')} will be left out`,
+      'They are stored in the cloud only. Tick them in the list below and ' +
+      'download them first if you want them included.'));
+  }
+  if (plan.locked) {
+    warnings.push(notice('warning',
+      `${plural(plan.locked, 'file')} cannot be opened`,
+      'Something is holding them open — usually Outlook. Close Outlook ' +
+      'completely, search again, and they will be included.'));
+  }
+
+  const body = el('div', {},
+    ...warnings,
+    el('p', {},
+      ids
+        ? `Reading ${plural(plan.files, 'chosen file')}, ${bytes(plan.total_bytes)} in total.`
+        : `Reading ${plural(plan.to_read, 'file')} not read yet, `
+          + `${bytes(plan.total_bytes)} in total.`),
+    el('p', {},
+      el('strong', {}, 'How long: '), plan.estimate, '. ',
+      el('span', { class: 'muted' }, plan.note)),
+
+    el('label', { class: 'check' }, sample,
+      el('span', {},
+        el('strong', {}, 'Just read the first 50 records from each file, to check'),
+        el('span', { class: 'check__note' },
+          'Takes seconds. Do this first: it proves the files read correctly '
+          + 'before you commit to a long run. Reading properly afterwards adds '
+          + 'the rest without duplicating anything.'))),
+
+    el('div', { class: 'field' },
+      el('label', { for: 'read-kinds' }, 'What to read'),
+      (kinds.id = 'read-kinds', kinds),
+      el('div', { class: 'field__help' },
+        'Reading one kind at a time is faster if you only want the calendar.')),
+
+    plan.already_read
+      ? el('label', { class: 'check' }, again,
+          el('span', {},
+            `Read the ${plural(plan.already_read, 'file')} already read again`,
+            el('span', { class: 'check__note' },
+              'Only useful after changing a setting. Nothing is duplicated '
+              + 'either way.')))
+      : null,
+
+    el('p', { class: 'muted mb-0' },
+      'You can stop at any time. Everything read so far is kept, and starting '
+      + 'again carries on from where it stopped. Your original files are only '
+      + 'ever read — never changed.'),
+  );
+
+  const dialog = modal({
+    title: ids ? 'Read the chosen files?' : 'Read your Outlook files?',
+    body,
+    actions: [
+      el('button', {
+        class: 'btn btn--primary', type: 'button',
+        onclick: async () => {
+          dialog.close();
+          try {
+            await api.startExtract({
+              ids: ids || [],
+              kinds: kinds.value || null,
+              sample: sample.checked ? 50 : 0,
+              resume: !again.checked,
+            });
+            pollJob();
+          } catch (err) {
+            mountModalError(err);
+          }
+        },
+      }, sample.checked ? 'Read a sample' : 'Start reading'),
+      el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() },
+        'Not now'),
+    ],
+  });
+}
+
 // --- live job progress ----------------------------------------------------
 
 async function pollJob() {
@@ -329,8 +441,36 @@ async function pollJob() {
   }
 
   if (job.state === 'done' && job.kind) {
+    const d = job.detail || {};
     host.append(notice('good', jobTitle(job.kind) + ' finished',
       el('p', {}, job.message),
+      d.sampled
+        ? el('p', { class: 'qualified-note' },
+            `That was a sample of the first ${num(d.sampled)} records per file, `
+            + 'not the whole thing. Read them properly when you are ready - '
+            + 'nothing will be duplicated.')
+        : null,
+      d.attachments_written
+        ? el('p', {}, `${num(d.attachments_written)} attachments were saved.`)
+        : null,
+      d.threads && d.threads.threads
+        ? el('p', {},
+            `${num(d.threads.threads)} conversations were put back together.`)
+        : null,
+      d.skipped_unreadable
+        ? el('p', { class: 'qualified-note' },
+            `${num(d.skipped_unreadable)} chosen file(s) were left out because `
+            + 'they are cloud-only or could not be opened.')
+        : null,
+      (d.failures && d.failures.length)
+        ? el('details', {},
+            el('summary', {},
+              `${num(d.failures.length)} file(s) could not be read`),
+            el('pre', { class: 'raw' },
+              d.failures
+                .map(([path, reason]) => `${path}\n    ${reason}`)
+                .join('\n\n')))
+        : null,
       job.detail && job.detail.skipped_roots && job.detail.skipped_roots.length
         ? el('p', {}, `These places were skipped because they do not exist: ${job.detail.skipped_roots.join(', ')}`)
         : null,
@@ -522,12 +662,19 @@ function renderSelectionActions() {
 
   const chosen = state.rows.filter((r) => state.selected.has(r.id));
   const cloud = chosen.filter((r) => r.is_placeholder);
+  const readable = chosen.filter((r) => !r.is_placeholder && r.is_readable);
 
   host.append(
     el('span', { class: 'strong' }, `${plural(n, 'file')} selected.`),
-    cloud.length
+    readable.length
       ? el('button', {
           class: 'btn btn--primary', type: 'button',
+          onclick: () => openReadDialog(readable.map((r) => r.id)),
+        }, `Read ${plural(readable.length, 'file')} into the archive`)
+      : null,
+    cloud.length
+      ? el('button', {
+          class: 'btn', type: 'button',
           onclick: () => confirmHydrate(cloud.map((r) => r.id)),
         }, `Download ${plural(cloud.length, 'cloud-only file')} from OneDrive`)
       : null,

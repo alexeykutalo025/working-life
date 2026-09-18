@@ -79,6 +79,19 @@ class HydrateRequest(BaseModel):
     confirm: bool = False
 
 
+class ExtractRequest(BaseModel):
+    """Read files into the archive.
+
+    ``ids`` empty means every file not read yet, which is what the big button
+    on the Sources screen does.
+    """
+
+    ids: list[int] = Field(default_factory=list)
+    kinds: str | None = None
+    sample: int = 0
+    resume: bool = True
+
+
 class NoteRequest(BaseModel):
     note: str
 
@@ -621,3 +634,173 @@ def hydrate_start(request: Request, body: HydrateRequest) -> dict[str, Any]:
     except JobBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"started": True, "job": status.as_dict()}
+
+
+# ---------------------------------------------------------------------------
+# Reading files into the archive
+# ---------------------------------------------------------------------------
+
+
+@router.post("/extract")
+def start_extract(request: Request, body: ExtractRequest) -> dict[str, Any]:
+    """Start reading. Returns immediately; watch /api/job for progress."""
+    from ..extract import parse_kinds
+
+    settings = _settings(request)
+    conn = _conn(request)
+
+    try:
+        kinds = parse_kinds(body.kinds)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    if body.ids:
+        placeholders = ",".join("?" * len(body.ids))
+        rows = conn.execute(
+            f"SELECT id, path, is_placeholder, is_readable, parse_state "
+            f"FROM source_files WHERE id IN ({placeholders})",
+            body.ids,
+        ).fetchall()
+
+        blocked = [r for r in rows if r["is_placeholder"] or not r["is_readable"]]
+        if blocked and len(blocked) == len(rows):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "None of the chosen files can be read yet. "
+                    + (
+                        "Some are stored in the cloud only and need downloading first. "
+                        if any(r["is_placeholder"] for r in blocked) else ""
+                    )
+                    + (
+                        "Some could not be opened - close Outlook and search again."
+                        if any(not r["is_readable"] for r in blocked) else ""
+                    )
+                ),
+            )
+        source_ids = [
+            int(r["id"]) for r in rows if not r["is_placeholder"] and r["is_readable"]
+        ]
+        skipped = len(blocked)
+    else:
+        source_ids = None
+        skipped = 0
+
+    def work(job) -> None:
+        from ..db import connect
+        from ..extract import Extractor
+
+        own = connect(settings.db_path)
+        try:
+            extractor = Extractor(settings, own, cancel=job.cancel_event)
+
+            def report(progress) -> None:
+                job.progress(
+                    done=progress.files_done,
+                    total=progress.files_total,
+                    current=(
+                        f"{Path(progress.current_file).name}"
+                        + (f"  -  {progress.current_folder}" if progress.current_folder else "")
+                    ),
+                    message=(
+                        f"{progress.items_written:,} records added"
+                        + (
+                            f", {progress.duplicates_collapsed:,} already in the archive"
+                            if progress.duplicates_collapsed else ""
+                        )
+                        + (
+                            f", {progress.attachments_written:,} attachments saved"
+                            if progress.attachments_written else ""
+                        )
+                    ),
+                )
+
+            extractor.on_progress = report
+            result = extractor.run(
+                kinds=kinds, source_ids=source_ids, sample=body.sample,
+                resume=body.resume,
+            )
+
+            job.progress(done=result.files_done, total=result.files_total)
+            job.finish(
+                result.message,
+                items_written=result.items_written,
+                duplicates_collapsed=result.duplicates_collapsed,
+                attachments_written=result.attachments_written,
+                failures=result.failures,
+                threads=result.detail_threads,
+                skipped_unreadable=skipped,
+                sampled=body.sample,
+            )
+        finally:
+            own.close()
+
+    try:
+        status = JOBS.start("extract", work, message="Opening the first file...")
+    except JobBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return {
+        "started": True,
+        "files": len(source_ids) if source_ids is not None else None,
+        "skipped_unreadable": skipped,
+        "job": status.as_dict(),
+    }
+
+
+@router.get("/extract/plan")
+def extract_plan(request: Request, ids: str = "") -> dict[str, Any]:
+    """What reading would involve, before starting it."""
+    conn = _conn(request)
+
+    where = "WHERE is_placeholder = 0 AND is_readable = 1"
+    params: list[Any] = []
+    if ids:
+        try:
+            chosen = [int(i) for i in ids.split(",") if i.strip()]
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail="The file numbers were not numbers."
+            ) from exc
+        where += f" AND id IN ({','.join('?' * len(chosen))})"
+        params.extend(chosen)
+
+    row = conn.execute(
+        f"SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes, "
+        f"SUM(CASE WHEN parse_state = 'done' THEN 1 ELSE 0 END) AS already_read, "
+        f"SUM(CASE WHEN parse_state IN ('pending','selected') THEN 1 ELSE 0 END) AS to_read "
+        f"FROM source_files {where}",
+        params,
+    ).fetchone()
+
+    blocked = conn.execute(
+        "SELECT SUM(is_placeholder) AS cloud, "
+        "SUM(CASE WHEN is_readable = 0 THEN 1 ELSE 0 END) AS locked FROM source_files"
+    ).fetchone()
+
+    total_bytes = int(row["bytes"] or 0)
+    to_read = int(row["to_read"] or 0)
+
+    # A rough shape of the wait, from the spec's 500 items/sec target and the
+    # size of what is queued. Said as a range, because it is an estimate and
+    # pretending otherwise would be the kind of false precision this program
+    # exists to avoid.
+    minutes = max(1, round(total_bytes / (25 * 1024 * 1024)))
+
+    return {
+        "files": int(row["n"] or 0),
+        "to_read": to_read,
+        "already_read": int(row["already_read"] or 0),
+        "total_bytes": total_bytes,
+        "cloud_only": int(blocked["cloud"] or 0),
+        "locked": int(blocked["locked"] or 0),
+        "estimate": (
+            "a few seconds" if minutes <= 1
+            else f"roughly {minutes} to {minutes * 3} minutes"
+        ),
+        "note": (
+            "This is a guess from the size of the files. A mailbox full of "
+            "attachments takes longer than one of short notes. You can stop at "
+            "any time and carry on later."
+        ),
+    }

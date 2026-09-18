@@ -661,21 +661,31 @@ def summarize(conn) -> str:
         f"Found {n:,} Outlook file{'s' if n != 1 else ''} "
         f"totalling {human_bytes(row['total'] or 0)}."
     ]
+    def many(n: int, singular: str, plural: str) -> str:
+        return f"{n:,} {singular if n == 1 else plural}"
+
     if row["dupes"]:
-        parts.append(f"{row['dupes']:,} are duplicates of another file.")
+        parts.append(
+            many(row["dupes"], "is a duplicate of another file",
+                 "are duplicates of another file") + "."
+        )
     if row["cloud"]:
         parts.append(
-            f"{row['cloud']:,} are stored in the cloud only and have not been "
-            "downloaded."
+            many(row["cloud"], "is stored in the cloud only", "are stored in the cloud only")
+            + " and " + ("has" if row["cloud"] == 1 else "have")
+            + " not been downloaded."
         )
     if row["locked"]:
         parts.append(
             f"{row['locked']:,} could not be opened - "
-            "they are probably in use by Outlook."
+            + ("it is" if row["locked"] == 1 else "they are")
+            + " probably in use by Outlook."
         )
     if row["uncompared"]:
         parts.append(
-            f"{row['uncompared']:,} are too large to have been compared yet, "
-            "so they are not yet known to be unique."
+            many(row["uncompared"], "is too large to have been compared yet",
+                 "are too large to have been compared yet")
+            + ", so " + ("it is" if row["uncompared"] == 1 else "they are")
+            + " not yet known to be unique."
         )
     return " ".join(parts)
