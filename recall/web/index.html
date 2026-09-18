@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Recall</title>
+<!--
+  Everything this page needs is served from this computer. There is not a
+  single link to the internet in here, by design: Recall must work with the
+  network cable unplugged, and nothing about this archive should ever leave
+  the machine it is on.
+-->
+<link rel="stylesheet" href="/static/app.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128452;</text></svg>">
+</head>
+<body>
+<a class="skip-link" href="#main">Skip to the main content</a>
+
+<div class="app">
+  <header class="masthead">
+    <a class="masthead__brand" href="#/">Recall</a>
+    <span class="masthead__tagline">your Outlook archive, on this computer</span>
+
+    <nav class="nav" id="nav" aria-label="Main"></nav>
+
+    <span class="masthead__spacer"></span>
+
+    <button class="btn" id="theme-toggle" type="button">
+      <span id="theme-toggle-label">Dark screen</span>
+    </button>
+  </header>
+
+  <div id="health-banner" role="status" aria-live="polite"></div>
+
+  <main class="main" id="main" tabindex="-1">
+    <div id="screen">
+      <p class="muted spinner-text">Loading</p>
+    </div>
+  </main>
+</div>
+
+<div id="modal-root"></div>
+
+<script type="module" src="/static/js/main.js"></script>
+<noscript>
+  <div class="main">
+    <div class="notice notice--error">
+      <p class="notice__title">JavaScript is switched off in this browser.</p>
+      <p>Recall needs it to show your archive. Switch it back on, or open this
+      page in a different browser.</p>
+    </div>
+  </div>
+</noscript>
+</body>
+</html>

@@ -82,6 +82,101 @@ def doctor() -> None:
 
 
 @app.command()
+def scan(
+    roots: list[str] = typer.Option(
+        None,
+        "--roots",
+        "-r",
+        help="Folders or drives to look in, for example:  --roots D: --roots C:\\Users . "
+        "Leave this out to search everywhere listed in config.toml.",
+    ),
+    full_hash: bool = typer.Option(
+        False,
+        "--full-hash",
+        help="Fingerprint even very large files, so duplicates among them can be "
+        "found. Slower.",
+    ),
+) -> None:
+    """Find every Outlook file on this computer. Reads names and sizes only."""
+    from .db import connect
+    from .scan.walker import Scanner
+
+    settings = _settings()
+    root_paths = [Path(r) for r in roots] if roots else settings.effective_scan_roots()
+    missing = [p for p in root_paths if not p.exists()]
+    root_paths = [p for p in root_paths if p.exists()]
+
+    if missing:
+        typer.echo("These places do not exist and will be skipped:")
+        for m in missing:
+            typer.echo(f"  {m}")
+    if not root_paths:
+        typer.secho("There is nowhere to look.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    typer.echo("Looking in:")
+    for p in root_paths:
+        typer.echo(f"  {p}")
+    typer.echo("")
+    typer.echo("This can take a long time on a full drive. Press Ctrl-C to stop;")
+    typer.echo("everything found so far is kept, and running it again carries on.")
+    typer.echo("")
+
+    conn = connect(settings.db_path)
+    scanner = Scanner(settings, conn)
+    try:
+        result = scanner.run(root_paths, full_hash=full_hash)
+    except KeyboardInterrupt:
+        scanner.cancel.set()
+        result = scanner.progress
+        typer.echo("")
+        typer.echo("Stopping cleanly...")
+    finally:
+        conn.close()
+
+    typer.echo("")
+    typer.echo(result.message or "Finished.")
+    if result.unreadable_dirs:
+        typer.echo(
+            f"{result.unreadable_dirs:,} folder(s) could not be opened and were "
+            "skipped. Every one is listed in the log."
+        )
+    typer.echo(f"Looked at {result.files_seen:,} files in {result.dirs_seen:,} folders.")
+    raise typer.Exit(code=0 if result.state in ("done", "canceled") else 1)
+
+
+@app.command()
+def serve(
+    port: int = typer.Option(None, "--port", "-p", help="Which port to listen on."),
+    open_browser: bool = typer.Option(
+        False, "--open", help="Open the page in your browser once it is ready."
+    ),
+) -> None:
+    """Start the local web page. Reachable from this computer only."""
+    from .api.app import serve as run_server
+
+    settings = _settings()
+    port = port or settings.server.port
+    typer.echo(f"Recall is at  http://{settings.server.host}:{port}")
+    typer.echo("Leave this window open. Press Ctrl-C to stop.")
+    try:
+        run_server(settings, port=port, open_browser=open_browser or settings.server.open_browser)
+    except OSError as exc:
+        if getattr(exc, "errno", None) in (48, 98, 10048):
+            typer.secho(
+                f"Port {port} is already being used by something else.\n"
+                "Either close that program, or start Recall on a different port:\n"
+                f"    recall serve --port {port + 1}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=1) from exc
+        raise
+    except KeyboardInterrupt:
+        typer.echo("\nRecall stopped.")
+
+
+@app.command()
 def reset(
     items: bool = typer.Option(
         False,
