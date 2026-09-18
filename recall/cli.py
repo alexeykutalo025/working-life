@@ -242,6 +242,262 @@ def extract(
     raise typer.Exit(code=0 if result.state in ("done", "canceled") else 1)
 
 
+@app.command()
+def audit(
+    checks: str = typer.Option(
+        None,
+        "--checks",
+        help="Which checks to run: corrupt, gaps, accounts, quality. "
+        "Separate several with commas. The default is all of them.",
+    ),
+    report: Path = typer.Option(
+        None, "--report", help="Also write the report to this file (.md or .txt)."
+    ),
+) -> None:
+    """Check the archive for problems and print what is wrong.
+
+    Exits with a non-zero code if anything critical is still open, so this can
+    be used to decide whether the archive is fit to rely on.
+    """
+    from .db import connect
+    from .integrity.report import format_markdown, format_report, run_audit
+
+    settings = _settings()
+    wanted = None
+    if checks:
+        wanted = {c.strip().lower() for c in checks.split(",") if c.strip()}
+
+    conn = connect(settings.db_path)
+    try:
+        try:
+            result = run_audit(conn, settings, checks=wanted)
+        except ValueError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2) from exc
+    finally:
+        conn.close()
+
+    text = format_report(result)
+    typer.echo(text)
+
+    if report:
+        report = Path(report)
+        report.parent.mkdir(parents=True, exist_ok=True)
+        if report.suffix.lower() in (".md", ".markdown"):
+            report.write_text(format_markdown(result), encoding="utf-8")
+        else:
+            report.write_text(text, encoding="utf-8")
+        typer.echo("")
+        typer.echo(f"Written to {report}")
+
+    raise typer.Exit(code=1 if result["has_critical"] else 0)
+
+
+findings_app = typer.Typer(
+    help="Look at and answer the problems Recall has found.", no_args_is_help=True
+)
+app.add_typer(findings_app, name="findings")
+
+
+@findings_app.command("list")
+def findings_list(
+    severity: str = typer.Option(None, "--severity", help="critical, high, medium or info."),
+    state: str = typer.Option("open", "--state", help="open, explained, resolved, wont_fix or all."),
+    code: str = typer.Option(None, "--code", help="Only this kind of problem."),
+    limit: int = typer.Option(100, "--limit"),
+) -> None:
+    """List the problems found, worst first."""
+    from .db import connect
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        where = []
+        params: list = []
+        if state == "open":
+            where.append("state IN ('open','acknowledged')")
+        elif state != "all":
+            where.append("state = ?")
+            params.append(state)
+        if severity:
+            where.append("severity = ?")
+            params.append(severity)
+        if code:
+            where.append("code = ?")
+            params.append(code)
+        where_sql = ("WHERE " + " AND ".join(where)) if where else ""
+
+        rows = conn.execute(
+            f"SELECT id, code, severity, title, estimated_loss, affected_count, state "
+            f"FROM findings {where_sql} "
+            f"ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
+            f"WHEN 'medium' THEN 2 ELSE 3 END, id LIMIT ?",
+            (*params, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    if not rows:
+        typer.echo("No problems match that.")
+        return
+
+    for row in rows:
+        marker = {
+            "critical": typer.colors.RED,
+            "high": typer.colors.YELLOW,
+        }.get(row["severity"])
+        typer.secho(
+            f"  [{row['id']:>4}] {row['severity']:<8} {row['title']}", fg=marker
+        )
+        extra = []
+        if row["estimated_loss"]:
+            extra.append(f"about {row['estimated_loss']:,} records unreadable")
+        if row["affected_count"]:
+            extra.append(f"{row['affected_count']:,} affected")
+        if row["state"] != "open":
+            extra.append(row["state"])
+        if extra:
+            typer.echo(f"         {'; '.join(extra)}")
+
+    typer.echo("")
+    typer.echo(f"{len(rows)} problem(s). To say what caused one:")
+    typer.echo(f'    recall findings explain {rows[0]["id"]} "what was happening"')
+
+
+@findings_app.command("explain")
+def findings_explain(
+    finding_id: int = typer.Argument(..., help="The problem's number."),
+    note: str = typer.Argument(..., help="What was happening, in your own words."),
+) -> None:
+    """Record what caused a problem. It stays visible; it stops nagging."""
+    from .db import connect
+    from .integrity.engine import set_finding_state
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        try:
+            changed = set_finding_state(conn, finding_id, "explained", note)
+        except ValueError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2) from exc
+    finally:
+        conn.close()
+
+    if not changed:
+        typer.secho(f"There is no problem numbered {finding_id}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.echo("Noted. It will stop appearing in the health banner.")
+    typer.echo("It stays on the timeline, with your note, permanently.")
+
+
+@findings_app.command("acknowledge")
+def findings_acknowledge(
+    finding_id: int = typer.Argument(...),
+    note: str = typer.Option(None, "--note"),
+) -> None:
+    """Mark a problem as seen. It stays open and still qualifies the counts."""
+    _set_state(finding_id, "acknowledged", note)
+
+
+@findings_app.command("wont-fix")
+def findings_wont_fix(
+    finding_id: int = typer.Argument(...),
+    note: str = typer.Option(None, "--note"),
+) -> None:
+    """Mark a problem as one you are not going to do anything about."""
+    _set_state(finding_id, "wont_fix", note)
+
+
+def _set_state(finding_id: int, state: str, note: str | None) -> None:
+    from .db import connect
+    from .integrity.engine import set_finding_state
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        changed = set_finding_state(conn, finding_id, state, note)
+    finally:
+        conn.close()
+    if not changed:
+        typer.secho(f"There is no problem numbered {finding_id}.", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"Problem {finding_id} is now marked {state}. The record is kept.")
+
+
+@findings_app.command("retry")
+def findings_retry(
+    finding_id: int = typer.Argument(..., help="The problem's number."),
+) -> None:
+    """Read the file again with the other reader, and see if it does better."""
+    from .db import connect
+    from .extract import Extractor
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        row = conn.execute(
+            "SELECT f.source_file_id, sf.path, sf.parse_backend, sf.item_count "
+            "FROM findings f JOIN source_files sf ON sf.id = f.source_file_id "
+            "WHERE f.id = ?",
+            (finding_id,),
+        ).fetchone()
+        if row is None:
+            typer.secho(
+                f"Problem {finding_id} is not about a file, so there is nothing "
+                "to read again.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(code=2)
+
+        was_backend = row["parse_backend"]
+        was_count = int(row["item_count"] or 0)
+        other = "com" if was_backend == "pypff" else "pypff"
+
+        typer.echo(f"Reading {row['path']} again.")
+        typer.echo(f"It was read with: {was_backend or 'unknown'}, giving {was_count:,} records.")
+        typer.echo(f"Trying: {other}")
+        typer.echo("")
+
+        settings.extract.pst_backend = other
+        conn.execute(
+            "UPDATE source_files SET parse_state = 'pending' WHERE id = ?",
+            (row["source_file_id"],),
+        )
+        result = Extractor(settings, conn).run(source_ids=[int(row["source_file_id"])])
+
+        after = conn.execute(
+            "SELECT item_count, parse_backend FROM source_files WHERE id = ?",
+            (row["source_file_id"],),
+        ).fetchone()
+        now_count = int(after["item_count"] or 0)
+    finally:
+        conn.close()
+
+    typer.echo("")
+    typer.echo(result.message)
+    if now_count > was_count:
+        typer.secho(
+            f"Better: {now_count:,} records now, against {was_count:,} before. "
+            f"The extra {now_count - was_count:,} have been added.",
+            fg=typer.colors.GREEN,
+        )
+        typer.echo("The problem stays on the list, with a note that a retry did better.")
+    elif now_count == was_count:
+        typer.echo(
+            f"The same: {now_count:,} records, as before. The other reader did no "
+            "better, so what is missing is genuinely unreadable."
+        )
+    else:
+        typer.secho(
+            f"Worse: {now_count:,} records, against {was_count:,} before. The "
+            "original result was better and has been kept.",
+            fg=typer.colors.YELLOW,
+        )
+
+
 people_app = typer.Typer(
     help="Look at and correct who is who in the archive.", no_args_is_help=True
 )

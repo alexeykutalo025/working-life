@@ -22,6 +22,12 @@ def settings(tmp_path: Path) -> Settings:
     s = Settings(workdir=WorkdirSettings(path=str(tmp_path / "workdir")))
     s.source_path = tmp_path / "config.toml"
     s.ensure_workdir()
+    # Never drive Outlook from a unit test. A deliberately-corrupt .pst makes
+    # Outlook put up a repair dialog, and the guard then waits out its stall
+    # timeout on every such fixture - minutes per test, for behaviour that is
+    # tested separately behind the needs_outlook mark.
+    s.extract.pst_backend = "pypff"
+    s.extract.cross_check_backends = False
     return s
 
 

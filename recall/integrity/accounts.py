@@ -234,10 +234,17 @@ def _check_duplicate_account_store(conn, settings) -> int:
     present: list[tuple] = []
     n = 0
 
+    # A single saved .eml that also appears in a mailbox is a duplicate record,
+    # not "the same mailbox saved twice", and calling it one would put noise at
+    # the top of the Problems screen. A store has to be substantial before this
+    # claim means anything.
+    min_items = 10
+
     sources = conn.execute(
         "SELECT sf.id, sf.path, sf.item_count FROM source_files sf "
-        "WHERE sf.parse_state = 'done' AND sf.item_count > 0 "
-        "ORDER BY sf.item_count DESC"
+        "WHERE sf.parse_state = 'done' AND sf.item_count >= ? "
+        "ORDER BY sf.item_count DESC",
+        (min_items,),
     ).fetchall()
 
     if len(sources) < 2:

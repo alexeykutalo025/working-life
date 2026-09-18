@@ -126,6 +126,8 @@ export const api = {
     const q = qs.toString();
     return request('/api/findings' + (q ? `?${q}` : ''));
   },
+  coverageMap: () => request('/api/coverage-map'),
+  retryFinding: (id) => request(`/api/findings/${id}/retry`, { method: 'POST' }),
   setFindingState: (id, state, note) =>
     request(`/api/findings/${id}/state`, {
       method: 'POST',

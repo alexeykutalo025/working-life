@@ -175,13 +175,11 @@ class VcfParser(Parser):
         # is not a date the contact "happened", so it is not made one.
         revision = _first(card, "rev")
         item.occurred = _revision_time(revision)
-        if item.occurred.utc is None:
-            item.note(
-                "no_date",
-                "A contact card records a person, not an event, so it has no "
-                "date of its own unless the card carries one. This one does "
-                "not, and none has been invented.",
-            )
+        # Deliberately not a no_date finding. A contact card records a person,
+        # not something that happened, so having no date is its normal
+        # condition rather than a defect. Flagging every entry in an address
+        # book would put thousands of non-problems on the Problems screen and
+        # teach the user to ignore it.
 
         item.categories = item.contact["categories"] or []
         return item

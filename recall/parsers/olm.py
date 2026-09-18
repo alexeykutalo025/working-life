@@ -274,11 +274,11 @@ class OlmParser(Parser):
 
         item.subject = name or (emails[0] if emails else None)
         item.occurred = TimePoint.unknown()
-        item.note(
-            "no_date",
-            "A contact card records a person, not an event, so it has no date "
-            "of its own. None has been invented.",
-        )
+        # Deliberately not a no_date finding. A contact card records a person,
+        # not something that happened, so having no date is its normal
+        # condition rather than a defect. Flagging every entry in an address
+        # book would put thousands of non-problems on the Problems screen and
+        # teach the user to ignore it.
         item.contact = {
             "display_name": name or None,
             "given_name": _text(element, "OPFContactCopyFirstName"),
@@ -316,13 +316,18 @@ def _folder_from_member(member: str) -> str:
     return "/".join(parts) or "Mac Outlook archive"
 
 
+#: Element opens, with a real boundary after the name. A plain substring count
+#: of "<email" also matches "<emails>" (the wrapper) and "<emailAddress" (a
+#: participant), which made a four-record claim out of a one-message file - and
+#: then a critical "3 records could not be read" finding about a file that was
+#: read perfectly.
+_RECORD_ELEMENT = re.compile(
+    rb"<(email|appointment|event|contact)(?=[\s/>])", re.IGNORECASE
+)
+
+
 def _count_records(raw: bytes) -> int:
-    lowered = raw.lower()
-    return (
-        lowered.count(b"<email")
-        + lowered.count(b"<appointment")
-        + lowered.count(b"<contact")
-    )
+    return len(_RECORD_ELEMENT.findall(raw))
 
 
 def _text(element, tag: str) -> str | None:

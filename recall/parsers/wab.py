@@ -139,10 +139,6 @@ class WabParser(Parser):
                 "readable text, not by reading its format, which is not public. "
                 "The name beside the address may not belong to it.",
             )
-            item.note(
-                "no_date",
-                "A recovered address book entry carries no date.",
-            )
 
             produced += 1
             self.outcome.yielded_count = produced

@@ -249,6 +249,96 @@ def list_findings(
     }
 
 
+@router.get("/coverage-map")
+def coverage(request: Request) -> dict[str, Any]:
+    """The coverage map: one row per year, one cell per month.
+
+    Spec, screen 7: the single most important picture in the application.
+    """
+    from ..integrity.coverage import coverage_map
+
+    return coverage_map(_conn(request))
+
+
+@router.post("/findings/{finding_id}/retry")
+def retry(request: Request, finding_id: int) -> dict[str, Any]:
+    """Read a file again with the other reader, and report what changed."""
+    from ..db import connect
+    from ..extract import Extractor
+
+    conn = _conn(request)
+    settings = request.app.state.settings
+
+    row = conn.execute(
+        "SELECT f.source_file_id, sf.path, sf.parse_backend, sf.item_count "
+        "FROM findings f JOIN source_files sf ON sf.id = f.source_file_id "
+        "WHERE f.id = ?",
+        (finding_id,),
+    ).fetchone()
+    if row is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Problem {finding_id} is not about a file, so there is nothing "
+                "to read again."
+            ),
+        )
+
+    source_id = int(row["source_file_id"])
+    was_count = int(row["item_count"] or 0)
+    was_backend = row["parse_backend"]
+    other = "com" if was_backend == "pypff" else "pypff"
+
+    # A separate connection: the retry writes, and the request connection is
+    # shared with whatever else this thread is doing.
+    own = connect(settings.db_path)
+    try:
+        from copy import deepcopy
+
+        retry_settings = deepcopy(settings)
+        retry_settings.extract.pst_backend = other
+
+        own.execute(
+            "UPDATE source_files SET parse_state = 'pending' WHERE id = ?", (source_id,)
+        )
+        result = Extractor(retry_settings, own).run(source_ids=[source_id])
+
+        after = own.execute(
+            "SELECT item_count, parse_backend FROM source_files WHERE id = ?",
+            (source_id,),
+        ).fetchone()
+        now_count = int(after["item_count"] or 0)
+        now_backend = after["parse_backend"]
+    finally:
+        own.close()
+
+    if now_count > was_count:
+        message = (
+            f"Better: {now_count:,} records now, against {was_count:,} before. "
+            f"The extra {now_count - was_count:,} have been added to the archive. "
+            "The problem stays on the list with a note that a retry did better."
+        )
+    elif now_count == was_count:
+        message = (
+            f"The same: {now_count:,} records, as before. The other reader did no "
+            "better, so what is missing is genuinely unreadable."
+        )
+    else:
+        message = (
+            f"Worse: {now_count:,} records, against {was_count:,} before. Nothing "
+            "was lost - the records already in the archive stay there."
+        )
+
+    return {
+        "was_count": was_count,
+        "was_backend": was_backend,
+        "now_count": now_count,
+        "now_backend": now_backend,
+        "message": message,
+        "extract_message": result.message,
+    }
+
+
 @router.post("/findings/{finding_id}/state")
 def set_state(request: Request, finding_id: int, body: StateRequest) -> dict[str, Any]:
     """Record the user's decision. Nothing here ever deletes a finding."""

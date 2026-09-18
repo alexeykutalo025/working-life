@@ -454,9 +454,17 @@ class Extractor:
                     title=f"{titles.get(code, code)}: {item.subject or '(no subject)'}",
                     detail=detail,
                     item_id=item_id,
-                    source_file_id=source_id,
+                    # Deliberately not source_file_id. An item-level finding is
+                    # about the record, and the record already names its files
+                    # through item_sources. Setting both would give the same
+                    # fact two different dedup keys, so a later sweep for the
+                    # same condition would report it twice.
                     affected_count=1,
-                    evidence={"subject": item.subject, "kind": item.kind},
+                    evidence={
+                        "subject": item.subject,
+                        "kind": item.kind,
+                        "source_file_id": source_id,
+                    },
                 ),
             )
 
