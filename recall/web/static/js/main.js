@@ -109,6 +109,7 @@ const NAV = [
   { path: '/', label: 'Home' },
   { path: '/sources', label: 'Files found' },
   { path: '/timeline', label: 'Timeline' },
+  { path: '/people', label: 'People' },
 ];
 
 const routes = {
@@ -116,6 +117,7 @@ const routes = {
   '/': () => import('./screens/home.js'),
   '/sources': () => import('./screens/sources.js'),
   '/timeline': () => import('./screens/timeline.js'),
+  '/people': () => import('./screens/people.js'),
 };
 
 function buildNav() {

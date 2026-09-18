@@ -242,6 +242,105 @@ def extract(
     raise typer.Exit(code=0 if result.state in ("done", "canceled") else 1)
 
 
+people_app = typer.Typer(
+    help="Look at and correct who is who in the archive.", no_args_is_help=True
+)
+app.add_typer(people_app, name="people")
+
+
+@people_app.command("suggest")
+def people_suggest(
+    limit: int = typer.Option(50, "--limit", help="How many suggestions to show."),
+) -> None:
+    """Show people who may be listed twice. Merges nothing."""
+    from .db import connect
+    from .normalize.merge import suggest_merges
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        proposals = suggest_merges(conn, settings, limit=limit)
+        if not proposals:
+            typer.echo("Nobody looks like they are listed twice.")
+            return
+
+        typer.echo(
+            f"{len(proposals)} suggestion(s). Nothing has been merged - these are "
+            "guesses, with the evidence shown."
+        )
+        typer.echo("")
+        for p in proposals:
+            names = {
+                int(r["id"]): (r["display_name"] or "(no name)")
+                for r in conn.execute(
+                    "SELECT id, display_name FROM people WHERE id IN (?, ?)",
+                    (p.person_a, p.person_b),
+                )
+            }
+            typer.echo(
+                f"  [{p.confidence:.2f}]  {names.get(p.person_a)} (#{p.person_a})"
+                f"  <->  {names.get(p.person_b)} (#{p.person_b})"
+            )
+            typer.echo(f"           {p.reason}")
+            caution = p.evidence.get("caution")
+            if caution:
+                typer.secho(f"           {caution}", fg=typer.colors.YELLOW)
+            typer.echo(
+                f"           to join them:  recall people merge "
+                f"--keep {p.person_a} --merge {p.person_b}"
+            )
+            typer.echo("")
+    finally:
+        conn.close()
+
+
+@people_app.command("merge")
+def people_merge(
+    keep: int = typer.Option(..., "--keep", help="The person to keep."),
+    merge: int = typer.Option(..., "--merge", help="The person to join into them."),
+    note: str = typer.Option(None, "--note", help="Why, for the record."),
+) -> None:
+    """Join two people into one. Undo with:  recall people unmerge <id>"""
+    from .db import connect
+    from .normalize.merge import MergeError, apply_merge
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        result = apply_merge(conn, keep, merge, note=note)
+    except MergeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        conn.close()
+
+    typer.echo(
+        f"Joined {result['merged_name']} (#{result['merged']}) into "
+        f"{result['kept_name']} (#{result['kept']})."
+    )
+    typer.echo(f"Nothing was deleted. To undo:  recall people unmerge {result['merged']}")
+
+
+@people_app.command("unmerge")
+def people_unmerge(
+    person_id: int = typer.Argument(..., help="The person to separate out again."),
+) -> None:
+    """Separate a person who was merged into someone else."""
+    from .db import connect
+    from .normalize.merge import MergeError, undo_merge
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        result = undo_merge(conn, person_id)
+    except MergeError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+    finally:
+        conn.close()
+    typer.echo(f"Person #{result['separated']} is separate again.")
+
+
 @app.command(name="export")
 def export_cmd(
     format: str = typer.Argument(

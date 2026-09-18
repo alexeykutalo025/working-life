@@ -95,6 +95,27 @@ export const api = {
     request('/api/eras', { method: 'POST', body: JSON.stringify(era) }),
   deleteEra: (id) => request(`/api/eras/${id}`, { method: 'DELETE' }),
 
+  // --- people ---
+  people: (params = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '') qs.set(k, v);
+    });
+    const q = qs.toString();
+    return request('/api/people' + (q ? `?${q}` : ''));
+  },
+  person: (id) => request(`/api/people/${id}`),
+  mergeQueue: () => request('/api/people/merge-queue'),
+  mergePeople: (keepId, mergeId, note) =>
+    request('/api/people/merge', {
+      method: 'POST',
+      body: JSON.stringify({ keep_id: keepId, merge_id: mergeId, note }),
+    }),
+  unmergePerson: (id) =>
+    request(`/api/people/${id}/unmerge`, { method: 'POST' }),
+  editPerson: (id, fields) =>
+    request(`/api/people/${id}`, { method: 'POST', body: JSON.stringify(fields) }),
+
   // --- findings ---
   findingsSummary: () => request('/api/findings/summary'),
   findings: (params = {}) => {

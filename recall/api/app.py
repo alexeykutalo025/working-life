@@ -58,12 +58,14 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.db = Db(settings.db_path)
 
     from . import findings as findings_router
+    from . import people as people_router
     from . import sources as sources_router
     from . import timeline as timeline_router
 
     app.include_router(sources_router.router, prefix="/api")
     app.include_router(timeline_router.router, prefix="/api")
     app.include_router(findings_router.router, prefix="/api")
+    app.include_router(people_router.router, prefix="/api")
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:

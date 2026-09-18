@@ -87,7 +87,7 @@ _REGISTRY: list[type[Parser]] = []
 #: Every parser module, imported by ``load_all_parsers``. A format is added here
 #: when its reader exists, so the log never warns about a reader that was never
 #: meant to be present.
-PARSER_MODULES: tuple[str, ...] = ("ics", "vcs", "pst_backend")
+PARSER_MODULES: tuple[str, ...] = ("ics", "vcs", "vcf", "wab", "pst_backend")
 
 
 def register(parser_cls: type[Parser]) -> type[Parser]:

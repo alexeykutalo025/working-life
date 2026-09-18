@@ -546,6 +546,18 @@ class Extractor:
 
     def _run_post_checks(self) -> None:
         """Integrity checks run at the end of every extraction (spec section 9)."""
+        # People's counts and date spans are derived, so they are recomputed
+        # rather than maintained incrementally: an incremental count that drifts
+        # is worse than no count, because it looks authoritative.
+        try:
+            from .normalize.merge import recount_all
+
+            with transaction(self.conn):
+                recount_all(self.conn)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("People's totals could not be recounted: %s", exc)
+            log_error(self.conn, "extract", f"Recounting people failed: {exc}")
+
         try:
             from .integrity.engine import run_all_checks
 
