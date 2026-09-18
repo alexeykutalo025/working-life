@@ -57,9 +57,13 @@ def create_app(settings: Settings) -> FastAPI:
     app.state.settings = settings
     app.state.db = Db(settings.db_path)
 
+    from . import findings as findings_router
     from . import sources as sources_router
+    from . import timeline as timeline_router
 
     app.include_router(sources_router.router, prefix="/api")
+    app.include_router(timeline_router.router, prefix="/api")
+    app.include_router(findings_router.router, prefix="/api")
 
     @app.exception_handler(Exception)
     async def unhandled(request: Request, exc: Exception) -> JSONResponse:
@@ -78,6 +82,18 @@ def create_app(settings: Settings) -> FastAPI:
     @app.get("/api/health")
     def health() -> dict:
         return {"ok": True, "version": __version__}
+
+    # Everything is served off a local disk, so caching buys nothing and costs
+    # something real: after Recall is updated the browser would keep running
+    # the old JavaScript against the new API, and the user would see a broken
+    # screen with no way to know why. A hard refresh is not a thing to ask of
+    # someone who did not know the file was cached.
+    @app.middleware("http")
+    async def no_cache(request: Request, call_next):
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store, must-revalidate"
+        response.headers["Pragma"] = "no-cache"
+        return response
 
     if STATIC_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

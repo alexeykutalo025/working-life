@@ -316,6 +316,12 @@ def _check_partial_parse(conn, settings) -> int:
         "SELECT id, path, item_count, parse_state, parse_backend, parse_error "
         "FROM source_files WHERE parse_state = 'done'"
     ):
+        # A file read with --sample was deliberately stopped early. Reporting
+        # that as data loss would turn the "check it works in seconds" feature
+        # into a wall of false alarms.
+        if was_sampled(conn, int(row["id"])):
+            continue
+
         claimed = _claimed_count(conn, int(row["id"]))
         if claimed is None or claimed <= 0:
             continue
@@ -620,6 +626,31 @@ def record_claimed_count(conn, source_file_id: int, claimed: int) -> None:
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (f"claimed_count:{source_file_id}", str(int(claimed))),
     )
+
+
+def record_sampled(conn, source_file_id: int, sample_limit: int) -> None:
+    """Remember that a file was read only in part, and on purpose.
+
+    Without this, ``recall extract --sample 50`` would report every large
+    mailbox as catastrophically incomplete, which is both wrong and the fastest
+    possible way to teach the user to ignore the Problems screen.
+    """
+    key = f"sampled:{source_file_id}"
+    if sample_limit:
+        conn.execute(
+            "INSERT INTO settings(key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(int(sample_limit))),
+        )
+    else:
+        conn.execute("DELETE FROM settings WHERE key = ?", (key,))
+
+
+def was_sampled(conn, source_file_id: int) -> bool:
+    row = conn.execute(
+        "SELECT value FROM settings WHERE key = ?", (f"sampled:{source_file_id}",)
+    ).fetchone()
+    return row is not None
 
 
 def record_cross_check(

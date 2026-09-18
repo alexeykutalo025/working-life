@@ -82,4 +82,39 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ ids, confirm: true }),
     }),
+
+  // --- timeline, eras, exports ---
+  timeline: (level = 'year', year = null, month = null) => {
+    const qs = new URLSearchParams({ level });
+    if (year !== null && year !== undefined) qs.set('year', year);
+    if (month !== null && month !== undefined) qs.set('month', month);
+    return request(`/api/timeline?${qs}`);
+  },
+  eras: () => request('/api/eras'),
+  createEra: (era) =>
+    request('/api/eras', { method: 'POST', body: JSON.stringify(era) }),
+  deleteEra: (id) => request(`/api/eras/${id}`, { method: 'DELETE' }),
+
+  // --- findings ---
+  findingsSummary: () => request('/api/findings/summary'),
+  findings: (params = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '' && v !== false) qs.set(k, v);
+    });
+    const q = qs.toString();
+    return request('/api/findings' + (q ? `?${q}` : ''));
+  },
+  setFindingState: (id, state, note) =>
+    request(`/api/findings/${id}/state`, {
+      method: 'POST',
+      body: JSON.stringify({ state, note }),
+    }),
+
+  exportFormats: () => request('/api/export/formats'),
+  exportData: (format, kind = 'calendar', full = true) =>
+    request('/api/export', {
+      method: 'POST',
+      body: JSON.stringify({ format, kind, full }),
+    }),
 };

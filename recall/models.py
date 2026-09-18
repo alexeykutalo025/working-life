@@ -280,6 +280,11 @@ class ParseOutcome:
     source_path: str
     backend: str
     yielded_count: int = 0
+    #: Records the parser actually reached, before any ``kinds`` filter. This is
+    #: what distinguishes "this store has no calendar entries" - a true answer -
+    #: from "this store could not be read", which is the only thing that should
+    #: make the caller try the other backend.
+    items_scanned: int = 0
     claimed_count: int | None = None
     folders_seen: int = 0
     last_good_folder: str | None = None

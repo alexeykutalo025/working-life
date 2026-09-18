@@ -184,8 +184,9 @@ class PyPffBackend(PstBackend):
         # estimated_loss a computed number rather than a feeling.
         claimed = self._folder_claimed_count(folder, n_messages)
         yielded_here = 0
+        skipped = name.lower() in _SKIP_FOLDERS
 
-        if name.lower() not in _SKIP_FOLDERS:
+        if not skipped:
             for index in range(n_messages):
                 try:
                     message = folder.get_sub_message(index)
@@ -210,7 +211,14 @@ class PyPffBackend(PstBackend):
                 if self.sample_limit and self.outcome.yielded_count + yielded_here >= self.sample_limit:
                     break
 
-        self.outcome.folder_counts[folder_path] = (claimed, yielded_here)
+        # Deleted Items and Junk are skipped on purpose, so what they hold was
+        # never going to be read. Counting them as claimed-but-not-yielded
+        # would manufacture an estimated_loss out of a deliberate choice and
+        # report deleted mail as missing mail.
+        if not skipped:
+            self.outcome.folder_counts[folder_path] = (claimed, yielded_here)
+        else:
+            self.outcome.folder_counts[folder_path] = (0, 0)
 
         try:
             n_sub = folder.get_number_of_sub_folders()
@@ -258,6 +266,10 @@ class PyPffBackend(PstBackend):
 
     def _build_item(self, message, folder_path: str, kinds: frozenset[str] | None) -> ParsedItem | None:
         props = mapi.read_properties(message, codepage_hint=self._codepage)
+
+        # Counted before the filter: a store full of mail genuinely contains no
+        # calendar entries, and that is an answer, not a failure to read.
+        self.outcome.items_scanned += 1
 
         message_class = mapi.as_text(props.get(mapi.PR_MESSAGE_CLASS))
         kind = mapi.kind_for_message_class(message_class)
@@ -646,19 +658,43 @@ class OutlookComBackend(PstBackend):
     #: call, so this is the main throughput lever.
     _PAGE = 200
 
-    def __init__(self, path: Path, *, sample_limit: int = 0) -> None:
+    #: How long Outlook may go without making any progress before Recall gives
+    #: up on it. This is a stall timeout, not a total: a mailbox that takes six
+    #: hours to walk is fine as long as it keeps moving.
+    stall_timeout = 120.0
+
+    def __init__(self, path: Path, *, sample_limit: int = 0, stall_timeout: float | None = None) -> None:
         super().__init__(path, sample_limit=sample_limit)
         self._store_id: str | None = None
+        if stall_timeout is not None:
+            self.stall_timeout = stall_timeout
+
+    #: Below this a store cannot hold anything: a PST's own header and
+    #: allocation maps do not fit. Handing such a file to Outlook gains
+    #: nothing and costs the full stall timeout while Outlook decides whether
+    #: to offer to repair it.
+    _MIN_PLAUSIBLE_BYTES = 256 * 1024
 
     def available(self) -> bool:
         if not is_outlook_registered():
             return False
         try:
             import win32com.client  # noqa: F401
-
-            return True
         except ImportError:
             return False
+
+        try:
+            size = self.path.stat().st_size
+        except OSError:
+            return False
+        if size < self._MIN_PLAUSIBLE_BYTES:
+            log.info(
+                "Not asking Outlook to read %s: at %d bytes it is far too small "
+                "to be a mail store, so there is nothing in it for Outlook to find",
+                self.path.name, size,
+            )
+            return False
+        return True
 
     def parse(self, kinds: frozenset[str] | None = None) -> Iterator[ParsedItem]:
         """Read the store through Outlook.
@@ -673,9 +709,10 @@ class OutlookComBackend(PstBackend):
 
         try:
             records = run_with_timeout(
-                lambda: self._read_everything(kinds),
-                timeout=max(600.0, self.sample_limit * 2 or 600.0),
+                lambda pulse: self._read_everything(kinds, pulse),
+                timeout=self.stall_timeout,
                 what=f"Outlook reading {self.path.name}",
+                heartbeat=True,
             )
         except ComTimeout as exc:
             self.outcome.error = "Outlook stopped responding"
@@ -700,13 +737,29 @@ class OutlookComBackend(PstBackend):
             self.outcome.yielded_count += 1
             yield _item_from_com_record(record)
 
-    def _read_everything(self, kinds: frozenset[str] | None) -> list[dict]:
-        """Attach the store, walk it, detach it. Detaching always happens."""
+    def _read_everything(self, kinds: frozenset[str] | None, pulse=None) -> list[dict]:
+        """Attach the store, walk it, detach it. Detaching always happens.
+
+        A store Outlook already has open is used where it is, and never
+        detached: calling AddStore on the mailbox Outlook is currently using
+        blocks indefinitely, and RemoveStore on it would disconnect the user's
+        own mail.
+        """
         import pythoncom
         import win32com.client
 
         app = win32com.client.Dispatch("Outlook.Application")
         session = app.GetNamespace("MAPI")
+
+        if pulse is not None:
+            pulse.beat()
+
+        already_open = self._find_open_store(session)
+        if already_open is not None:
+            log.info("%s is already open in Outlook; reading it in place", self.path.name)
+            records: list[dict] = []
+            self._walk(already_open.GetRootFolder(), "", kinds, records, 0, pulse)
+            return records
 
         before = {self._store_key(session.Stores.Item(i + 1)) for i in range(session.Stores.Count)}
 
@@ -743,9 +796,11 @@ class OutlookComBackend(PstBackend):
                 )
 
             self._store_id = self._store_key(store)
+            if pulse is not None:
+                pulse.beat()
             root = store.GetRootFolder()
             records: list[dict] = []
-            self._walk(root, "", kinds, records, depth=0)
+            self._walk(root, "", kinds, records, 0, pulse)
             return records
         finally:
             try:
@@ -755,6 +810,28 @@ class OutlookComBackend(PstBackend):
                 log.warning("Outlook did not detach %s cleanly: %s", self.path, exc)
             pythoncom.CoUninitialize  # noqa: B018 - the guard thread handles this
 
+    def _find_open_store(self, session):
+        """The store for this file, if Outlook already has it open.
+
+        Outlook exposes each store's file path, so the match is on the path
+        rather than on a name that might coincide.
+        """
+        target = str(self.path).casefold()
+        try:
+            count = int(session.Stores.Count)
+        except Exception:  # noqa: BLE001
+            return None
+
+        for i in range(1, count + 1):
+            try:
+                store = session.Stores.Item(i)
+                path = str(getattr(store, "FilePath", "") or "").casefold()
+            except Exception:  # noqa: BLE001
+                continue
+            if path and path == target:
+                return store
+        return None
+
     @staticmethod
     def _store_key(store) -> str:
         try:
@@ -762,9 +839,11 @@ class OutlookComBackend(PstBackend):
         except Exception:  # noqa: BLE001
             return str(id(store))
 
-    def _walk(self, folder, parent_path: str, kinds, records: list[dict], depth: int) -> None:
+    def _walk(self, folder, parent_path: str, kinds, records: list[dict], depth: int, pulse=None) -> None:
         if depth > 40:
             return
+        if pulse is not None:
+            pulse.beat()
         try:
             name = str(folder.Name)
         except Exception:  # noqa: BLE001
@@ -810,8 +889,11 @@ class OutlookComBackend(PstBackend):
 
                 records.append(record)
                 yielded += 1
+                self.outcome.items_scanned += 1
                 self.outcome.last_good_folder = folder_path
                 self.outcome.last_good_offset = index
+                if pulse is not None and len(records) % 25 == 0:
+                    pulse.beat()
 
             self.outcome.folder_counts[folder_path] = (total, yielded)
 
@@ -828,7 +910,7 @@ class OutlookComBackend(PstBackend):
                 sub = subfolders.Item(index)
             except Exception:  # noqa: BLE001
                 continue
-            self._walk(sub, folder_path, kinds, records, depth + 1)
+            self._walk(sub, folder_path, kinds, records, depth + 1, pulse)
 
 
 #: Outlook's OlObjectClass values for the item types that matter.
@@ -1187,10 +1269,12 @@ class PstParser(Parser):
         sample_limit: int = 0,
         preferred: str = "auto",
         cross_check: bool = False,
+        com_stall_timeout: float | None = None,
     ) -> None:
         super().__init__(path, sample_limit=sample_limit)
         self.preferred = preferred
         self.cross_check = cross_check
+        self.com_stall_timeout = com_stall_timeout
         self._backend: PstBackend | None = None
         #: Item counts per backend, for the backend_disagreement check.
         self.backend_counts: dict[str, int | None] = {"pypff": None, "com": None}
@@ -1207,7 +1291,14 @@ class PstParser(Parser):
         last_error: str | None = None
 
         for backend_cls in order:
-            backend = backend_cls(self.path, sample_limit=self.sample_limit)
+            if backend_cls is OutlookComBackend and self.com_stall_timeout:
+                backend = backend_cls(
+                    self.path,
+                    sample_limit=self.sample_limit,
+                    stall_timeout=self.com_stall_timeout,
+                )
+            else:
+                backend = backend_cls(self.path, sample_limit=self.sample_limit)
             if not backend.available():
                 continue
 
@@ -1230,16 +1321,25 @@ class PstParser(Parser):
 
             self.backend_counts[backend.name] = produced
             self._absorb(backend.outcome, produced)
+            scanned = backend.outcome.items_scanned
 
-            if produced > 0:
+            if produced > 0 or scanned > 0:
+                # Either it found what was asked for, or it walked the store and
+                # found records of other kinds. Both mean the store was read.
+                # Falling through here because a mail-only mailbox holds no
+                # calendar entries would send every extraction to Outlook and
+                # turn a 0.2-second read into a ten-minute wait.
                 backend.close()
-                if self.cross_check:
+                if self.cross_check and produced > 0:
                     self._cross_check(backend.name, kinds)
                 return
 
-            # Zero items from an .ost is the documented signal to try Outlook.
+            # Nothing at all came out. That is the documented signal to try the
+            # other backend - especially for .ost, which pypff often cannot
+            # read at all.
             last_error = backend.outcome.error or (
-                f"{backend.name} read the file but found nothing in it"
+                f"{backend.name} opened the file but could not read a single "
+                "record out of it"
             )
             backend.close()
 
@@ -1258,6 +1358,7 @@ class PstParser(Parser):
     def _absorb(self, outcome: ParseOutcome, produced: int) -> None:
         self.outcome.backend = outcome.backend
         self.outcome.yielded_count = produced
+        self.outcome.items_scanned = outcome.items_scanned
         self.outcome.folders_seen = outcome.folders_seen
         self.outcome.last_good_folder = outcome.last_good_folder
         self.outcome.last_good_offset = outcome.last_good_offset

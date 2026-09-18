@@ -242,6 +242,67 @@ def extract(
     raise typer.Exit(code=0 if result.state in ("done", "canceled") else 1)
 
 
+@app.command(name="export")
+def export_cmd(
+    format: str = typer.Argument(
+        ..., help="csv, xlsx, markdown or json."
+    ),
+    kind: str = typer.Option(
+        "calendar", "--kind", help="calendar, mail or contacts."
+    ),
+    out: Path = typer.Option(
+        None, "--out", help="Where to write it. The default is workdir/exports."
+    ),
+    basic: bool = typer.Option(
+        False,
+        "--basic",
+        help="Write only the columns the specification fixes, leaving out the "
+        "extra detail columns.",
+    ),
+) -> None:
+    """Save part of the archive to a file, with its integrity statement."""
+    from .db import connect
+    from .export import ExportError, run_export
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        data_path, statement_path, statement = run_export(
+            conn, settings, fmt=format, kind=kind, out_path=out, full=not basic
+        )
+    except ExportError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2) from exc
+    except OSError as exc:
+        typer.secho(f"The file could not be written: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from exc
+    finally:
+        conn.close()
+
+    typer.echo(f"Wrote {statement.exported_count:,} records to:")
+    typer.echo(f"  {data_path}")
+    if statement_path:
+        typer.echo("What is missing or uncertain in it is written beside it:")
+        typer.echo(f"  {statement_path}")
+
+    if not statement.is_clean:
+        typer.echo("")
+        if statement.estimated_missing:
+            typer.secho(
+                f"This export is NOT complete. About "
+                f"{statement.estimated_missing:,} more records could not be read.",
+                fg=typer.colors.YELLOW,
+            )
+        for q in statement.qualifiers:
+            typer.secho(f"  - {q.text}", fg=typer.colors.YELLOW)
+        if statement.undated_count:
+            typer.secho(
+                f"  - {statement.undated_count:,} record(s) have no date and are "
+                "in no date range.",
+                fg=typer.colors.YELLOW,
+            )
+
+
 @app.command()
 def serve(
     port: int = typer.Option(None, "--port", "-p", help="Which port to listen on."),

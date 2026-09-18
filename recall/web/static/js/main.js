@@ -49,37 +49,45 @@ async function refreshHealth() {
   const host = document.getElementById('health-banner');
   if (!host) return;
   try {
-    const summary = await api.sourcesSummary();
+    const [summary, health] = await Promise.all([
+      api.sourcesSummary(),
+      api.findingsSummary(),
+    ]);
     const c = summary.counts || {};
-    const bits = [];
-    if (c.unreadable) bits.push(`${c.unreadable} file(s) could not be opened`);
-    if (c.failed) bits.push(`${c.failed} file(s) could not be read`);
-    if (c.placeholders) bits.push(`${c.placeholders} file(s) are in the cloud only`);
-    if (c.uncompared) bits.push(`${c.uncompared} file(s) not yet compared for duplicates`);
 
     let level = 'clear';
-    let label = 'Archive health';
     let text;
 
-    if (!c.n) {
+    if (health.total_open) {
+      // The findings are the truth about the archive's health. The banner says
+      // what they say, at the severity they carry - it never softens a critical
+      // finding into a reassuring sentence.
+      level = health.worst_severity === 'critical' ? 'critical'
+        : health.worst_severity === 'high' ? 'high'
+          : health.worst_severity === 'medium' ? 'medium' : 'info';
+      text = health.sentence;
+    } else if (!c.n) {
       level = 'info';
       text = 'Nothing has been found yet. Start with "Find Outlook files on this computer".';
-    } else if (bits.length) {
-      level = c.unreadable || c.failed ? 'high' : 'medium';
-      text = bits.join(' · ');
     } else if (!c.parsed) {
       level = 'info';
       text = `${c.n} file(s) found, none read yet. Nothing is in the archive so far.`;
     } else {
-      text = 'No problems found with the files read so far.';
+      text = 'No problems have been found in what has been read so far.';
     }
+
+    const extras = [];
+    if (c.placeholders) extras.push(`${c.placeholders} file(s) are in the cloud only`);
+    if (c.uncompared) extras.push(`${c.uncompared} not yet compared for duplicates`);
+    if (extras.length) text += ` · ${extras.join(' · ')}`;
 
     clear(host);
     host.className = `health health--${level}`;
     host.append(
-      el('span', { class: 'health__label' }, label + ':'),
+      el('span', { class: 'health__label' }, 'Archive health:'),
       el('span', { class: 'health__text' }, text),
-      el('a', { class: 'health__link', href: '#/problems' }, 'See all problems'),
+      el('a', { class: 'health__link', href: '#/problems' },
+        health.total_open ? `See all ${health.total_open} problems` : 'See all problems'),
     );
   } catch (err) {
     clear(host);
@@ -100,12 +108,14 @@ async function refreshHealth() {
 const NAV = [
   { path: '/', label: 'Home' },
   { path: '/sources', label: 'Files found' },
+  { path: '/timeline', label: 'Timeline' },
 ];
 
 const routes = {
   '': () => import('./screens/home.js'),
   '/': () => import('./screens/home.js'),
   '/sources': () => import('./screens/sources.js'),
+  '/timeline': () => import('./screens/timeline.js'),
 };
 
 function buildNav() {

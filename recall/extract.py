@@ -28,7 +28,12 @@ from typing import Callable, Iterable
 from .config import Settings
 from .db import log_error, transaction
 from .integrity.engine import Finding, record_finding
-from .integrity.sources import record_claimed_count, record_cross_check, record_folder_claims
+from .integrity.sources import (
+    record_claimed_count,
+    record_cross_check,
+    record_folder_claims,
+    record_sampled,
+)
 from .logging_setup import get_logger
 from .models import Kind, ParsedItem, ParseState, Role, Severity
 from .normalize.dedup import dedup_key_for
@@ -229,6 +234,9 @@ class Extractor:
         if parser_cls.name == "pst":
             kwargs["preferred"] = self.settings.extract.pst_backend
             kwargs["cross_check"] = self.settings.extract.cross_check_backends and not limit
+            kwargs["com_stall_timeout"] = self.settings.extract.com_stall_timeout_seconds
+
+        record_sampled(self.conn, source_id, limit)
 
         parser = parser_cls(path, **kwargs)
         written = 0

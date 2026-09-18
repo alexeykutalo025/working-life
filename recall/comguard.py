@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import queue
 import threading
+import time
 from typing import Any, Callable, TypeVar
 
 from .logging_setup import get_logger
@@ -54,18 +55,52 @@ class ComTimeout(ComUnavailable):
     """Outlook was asked something and never answered."""
 
 
+class Heartbeat:
+    """Proof that a long COM call is still getting somewhere.
+
+    A fixed timeout cannot serve both cases Recall meets. Reading a 40 GB
+    mailbox through Outlook legitimately takes hours; a corrupt file that makes
+    Outlook put up a repair dialog never finishes at all. A single number is
+    either too short for the first or useless for the second.
+
+    So the worker calls ``beat()`` as it makes progress, and the deadline is
+    measured from the last beat rather than from the start. A wedged call is
+    caught in minutes; a slow one runs as long as it keeps moving.
+    """
+
+    def __init__(self) -> None:
+        self._last = time.monotonic()
+        self._lock = threading.Lock()
+        self.count = 0
+
+    def beat(self) -> None:
+        with self._lock:
+            self._last = time.monotonic()
+            self.count += 1
+
+    @property
+    def since_last(self) -> float:
+        with self._lock:
+            return time.monotonic() - self._last
+
+
 def run_with_timeout(
-    fn: Callable[[], T],
+    fn: Callable[..., T],
     timeout: float = DEFAULT_TIMEOUT,
     *,
     what: str = "Outlook",
+    heartbeat: bool = False,
 ) -> T:
     """Run ``fn`` on a COM-initialised daemon thread, with a deadline.
 
-    Raises ``ComTimeout`` if the deadline passes, or re-raises whatever ``fn``
-    raised. Never blocks longer than ``timeout``.
+    With ``heartbeat=True``, ``fn`` is called with a ``Heartbeat`` and the
+    deadline applies to the gap between beats rather than to the whole call.
+
+    Raises ``ComTimeout`` when the deadline passes, or re-raises whatever
+    ``fn`` raised. Never blocks indefinitely.
     """
     box: queue.Queue[tuple[bool, Any]] = queue.Queue(maxsize=1)
+    pulse = Heartbeat() if heartbeat else None
 
     def worker() -> None:
         try:
@@ -75,7 +110,7 @@ def run_with_timeout(
             return
         pythoncom.CoInitialize()
         try:
-            box.put((True, fn()))
+            box.put((True, fn(pulse) if pulse is not None else fn()))
         except BaseException as exc:  # noqa: BLE001 - relayed to the caller
             box.put((False, exc))
         finally:
@@ -86,11 +121,27 @@ def run_with_timeout(
 
     thread = threading.Thread(target=worker, daemon=True, name=f"com-{what}")
     thread.start()
-    try:
-        ok, payload = box.get(timeout=timeout)
-    except queue.Empty:
-        log.warning("%s did not respond within %.0f seconds", what, timeout)
-        raise ComTimeout(HUNG_MESSAGE.format(timeout=timeout)) from None
+
+    if pulse is None:
+        try:
+            ok, payload = box.get(timeout=timeout)
+        except queue.Empty:
+            log.warning("%s did not respond within %.0f seconds", what, timeout)
+            raise ComTimeout(HUNG_MESSAGE.format(timeout=timeout)) from None
+    else:
+        while True:
+            try:
+                ok, payload = box.get(timeout=min(timeout, 5.0))
+                break
+            except queue.Empty:
+                if pulse.since_last > timeout:
+                    log.warning(
+                        "%s stopped making progress: nothing for %.0f seconds "
+                        "after %d steps",
+                        what, pulse.since_last, pulse.count,
+                    )
+                    raise ComTimeout(HUNG_MESSAGE.format(timeout=timeout)) from None
+
     if ok:
         return payload  # type: ignore[return-value]
     raise payload  # type: ignore[misc]

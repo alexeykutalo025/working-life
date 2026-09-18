@@ -91,6 +91,10 @@ class ExtractSettings(_Section):
     cross_check_backends: bool = True
     attachment_text_cap_mb: int = 50
     ocr_enabled: bool = False
+    #: How long Outlook may go without any progress before Recall gives up on
+    #: it. A stall timeout, not a total: a mailbox that takes six hours to walk
+    #: is fine as long as it keeps moving.
+    com_stall_timeout_seconds: float = 120.0
 
     @field_validator("batch_size")
     @classmethod
