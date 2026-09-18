@@ -585,6 +585,18 @@ class Extractor:
         """Integrity checks run at the end of every extraction (spec section 9)."""
         # Threading is a global property - one late message can join two
         # existing threads - so it is rebuilt rather than maintained.
+        # The search index is built as part of extraction. Asking the user to
+        # run a second command before search works would mean a search that
+        # quietly finds nothing, which reads as "it is not in the archive".
+        try:
+            from .search.indexer import build_index
+
+            with transaction(self.conn):
+                build_index(self.conn)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("The search index could not be built: %s", exc)
+            log_error(self.conn, "extract", f"Building the search index failed: {exc}")
+
         try:
             from .normalize.threads import rebuild_threads
 

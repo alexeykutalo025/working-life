@@ -243,6 +243,53 @@ def extract(
 
 
 @app.command()
+def index(
+    rebuild: bool = typer.Option(
+        False,
+        "--rebuild",
+        help="Throw the index away and build it again from scratch. Do this "
+        "after updating Recall, or if searching misses things you know are there.",
+    ),
+) -> None:
+    """Make the archive searchable. Extraction does this too; this repairs it."""
+    from .db import connect, transaction
+    from .search.indexer import build_index, index_health
+
+    settings = _settings()
+    conn = connect(settings.db_path)
+    try:
+        before = index_health(conn)
+        if not rebuild and before["complete"]:
+            typer.echo(
+                f"All {before['indexed']:,} records are already searchable. "
+                "Use --rebuild to build the index again anyway."
+            )
+            return
+
+        typer.echo(
+            "Rebuilding the search index from scratch..." if rebuild
+            else f"Adding {before['missing']:,} record(s) to the search index..."
+        )
+
+        def show(done: int, total: int) -> None:
+            if total and done % 2000 == 0:
+                typer.echo(f"  {done:,} of {total:,}")
+
+        with transaction(conn):
+            result = build_index(conn, rebuild=rebuild, progress=show)
+        after = index_health(conn)
+    finally:
+        conn.close()
+
+    typer.echo("")
+    typer.echo(
+        f"{after['indexed']:,} of {after['items']:,} records are searchable."
+    )
+    if not after["complete"]:
+        typer.secho(after["note"], fg=typer.colors.YELLOW)
+
+
+@app.command()
 def audit(
     checks: str = typer.Option(
         None,

@@ -95,6 +95,21 @@ export const api = {
     request('/api/eras', { method: 'POST', body: JSON.stringify(era) }),
   deleteEra: (id) => request(`/api/eras/${id}`, { method: 'DELETE' }),
 
+  // --- search and items ---
+  search: (params = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '' && v !== false) qs.set(k, v);
+    });
+    const q = qs.toString();
+    return request('/api/search' + (q ? `?${q}` : ''));
+  },
+  searchFilters: () => request('/api/search/filters'),
+  item: (id) => request(`/api/items/${id}`),
+  indexHealth: () => request('/api/index/health'),
+  buildIndex: (rebuild = false) =>
+    request('/api/index', { method: 'POST', body: JSON.stringify({ rebuild }) }),
+
   // --- people ---
   people: (params = {}) => {
     const qs = new URLSearchParams();

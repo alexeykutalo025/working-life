@@ -108,6 +108,7 @@ async function refreshHealth() {
 const NAV = [
   { path: '/', label: 'Home' },
   { path: '/sources', label: 'Files found' },
+  { path: '/search', label: 'Search' },
   { path: '/timeline', label: 'Timeline' },
   { path: '/people', label: 'People' },
   { path: '/problems', label: 'Problems' },
@@ -120,6 +121,8 @@ const routes = {
   '/timeline': () => import('./screens/timeline.js'),
   '/people': () => import('./screens/people.js'),
   '/problems': () => import('./screens/problems.js'),
+  '/search': () => import('./screens/search.js'),
+  '/item': () => import('./screens/item.js'),
 };
 
 function buildNav() {
