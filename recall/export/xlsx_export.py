@@ -8,6 +8,7 @@ first sheet, so nobody opens the workbook without seeing it.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Iterator
 
@@ -167,6 +168,13 @@ def _heading(column: str) -> str:
     }.get(column, column.replace("_", " "))
 
 
+#: Control characters the XLSX format forbids. Excel will not open a workbook
+#: containing them, and openpyxl refuses to write one - which means real mail
+#: crashes the export, because real mail is full of stray control bytes from
+#: thirty years of mail clients.
+_ILLEGAL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+
+
 def _cell(value):
     """Excel accepts strings and numbers; everything else becomes a string.
 
@@ -179,7 +187,20 @@ def _cell(value):
         return "yes" if value else "no"
     if isinstance(value, (int, float)):
         return value
-    text = str(value)
+
+    text = _ILLEGAL.sub("", str(value))
+
+    # Excel silently treats a leading = + - @ as a formula, exactly as CSV
+    # does, so the same apostrophe guard applies here.
+    if text.startswith(("=", "+", "-", "@")):
+        text = "'" + text
+
+    # A cell cannot hold more than 32,767 characters, and a long mail body
+    # easily exceeds that. Truncating with a visible marker is better than an
+    # export that will not open.
+    if len(text) > 32_000:
+        text = text[:32_000] + "… (truncated for Excel)"
+
     if text.isdigit() and len(text) < 15:
         return int(text)
     return text

@@ -1,28 +1,32 @@
 // Home - the archive at a glance, and the next sensible thing to do.
 //
-// Every number on this screen is countable from the database. Where a number is
-// affected by something Recall could not read, it is shown with the reason
-// attached rather than as a clean-looking total (spec 9.5).
+// Every total here is rendered through `honest()`, which cannot draw a number
+// without also drawing whatever qualifies it. That is the spec 9.5 rule made
+// structural rather than remembered.
 
 import { api } from '../api.js';
 import {
-  bytes, el, errorNotice, mount, notice, num, plural, setTitle,
+  bytes, date, el, errorNotice, honest, mount, notice, num, plural, setTitle,
 } from '../ui.js';
+
+const KIND_WORDS = {
+  message: 'Messages',
+  event: 'Calendar entries',
+  contact: 'Contacts',
+  task: 'Tasks',
+  note: 'Notes',
+};
 
 export async function render() {
   setTitle('Home');
 
-  let summary;
+  let data;
   try {
-    summary = await api.sourcesSummary();
+    data = await api.home();
   } catch (err) {
     mount(errorNotice(err));
     return;
   }
-
-  const c = summary.counts || {};
-  const nothingFound = !c.n;
-  const nothingRead = !c.parsed;
 
   const root = el('div', {},
     el('h1', { class: 'page__title' }, 'Your archive'),
@@ -31,125 +35,225 @@ export async function render() {
       'sent anywhere, and your original Outlook files are never changed.'),
   );
 
-  if (nothingFound) {
-    root.append(
-      notice('info', 'Nothing has been found yet',
-        el('p', {},
-          'Recall has not searched this computer. The first step is to find ' +
-          'out what Outlook files you have — that only reads file names ' +
-          'and sizes, and opens nothing.'),
-      ),
-      el('div', { class: 'btn-row mb-5' },
-        el('a', { class: 'btn btn--primary btn--big', href: '#/sources' },
-          'Find Outlook files on this computer'),
-      ),
-      whatHappensNext(),
-    );
+  if (!data.sources.found) {
+    root.append(gettingStarted());
     mount(root);
     return;
   }
 
   root.append(
-    el('div', { class: 'grid grid--4 mb-5' },
-      statCard('Outlook files found', num(c.n), bytes(c.total_bytes) + ' in total'),
-      statCard('Files read so far', num(c.parsed),
-        c.pending ? `${num(c.pending)} still to read` : 'all of them'),
-      statCard('Duplicate files', num(c.duplicates),
-        c.uncompared
-          ? `${num(c.uncompared)} not compared yet, so this may rise`
-          : 'identical copies of another file',
-        Boolean(c.uncompared)),
-      statCard('Files with a problem', num((c.unreadable || 0) + (c.failed || 0)),
-        c.placeholders ? `${num(c.placeholders)} more are cloud-only` : null,
-        Boolean(c.unreadable || c.failed)),
-    ),
+    headline(data),
+    kindCards(data),
+    undatedPanel(data),
+    coveragePanel(data),
+    nextSteps(data),
+    detailPanel(data),
   );
-
-  if (nothingRead) {
-    root.append(
-      notice('info', 'Nothing has been read out of those files yet',
-        el('p', {},
-          `Recall has found ${plural(c.n, 'file')}, and has not opened ` +
-          `${c.n === 1 ? 'it' : 'any of them'} yet. Until it does, there is no ` +
-          'mail, calendar or contacts in the archive to look at.'),
-        el('p', {},
-          'Go to "Files found", tick the files you want, and start reading. ' +
-          'Reading a sample of 50 records from each file first is a quick way ' +
-          'to check everything works before a long run.'),
-      ),
-    );
-  }
-
-  root.append(
-    el('h2', {}, 'What to do next'),
-    el('div', { class: 'btn-row mb-5' },
-      el('a', { class: 'btn btn--primary btn--big', href: '#/sources' },
-        nothingRead ? 'Read these files into the archive' : 'See the files found'),
-      c.placeholders
-        ? el('a', { class: 'btn btn--big', href: '#/sources' },
-            `Deal with ${plural(c.placeholders, 'cloud-only file')}`)
-        : null,
-      (c.unreadable || c.failed)
-        ? el('a', { class: 'btn btn--big', href: '#/problems' },
-            'Look at what could not be read')
-        : null,
-    ),
-  );
-
-  if (summary.last_scan) {
-    const s = summary.last_scan;
-    let roots = [];
-    try { roots = JSON.parse(s.roots_json || '[]'); } catch { roots = []; }
-    root.append(
-      el('details', {},
-        el('summary', {}, 'The last search of this computer'),
-        el('p', {}, `Started ${s.started_utc}, finished ${s.finished_utc || 'not yet'}. ` +
-          `State: ${s.state}. Looked at ${num(s.files_seen)} files and found ` +
-          `${num(s.candidates_found)} Outlook files.`),
-        el('p', {}, 'Places searched:'),
-        el('pre', { class: 'raw' }, roots.join('\n') || '(none recorded)'),
-      ),
-    );
-  }
-
   mount(root);
 }
 
-function statCard(label, value, note, qualified = false) {
-  return el('div', { class: 'stat' },
-    el('div', { class: qualified ? 'stat__value qualified' : 'stat__value' }, value),
-    el('div', { class: 'stat__label' }, label),
-    note
-      ? el('span', { class: qualified ? 'stat__qualifier' : 'check__note' }, note)
+// --- the headline ---------------------------------------------------------
+
+function headline(data) {
+  const span = data.span;
+
+  return el('div', { class: 'card' },
+    el('div', { class: 'row', style: 'gap:18px;align-items:baseline' },
+      el('span', { style: 'font-size:44px;font-weight:700;line-height:1' },
+        num(data.total.value)),
+      el('span', { style: 'font-size:20px' }, 'records in the archive'),
+    ),
+    data.total.qualified
+      ? el('p', { class: 'qualified-note', style: 'margin-top:10px' },
+          data.total.estimated_missing
+            ? `About ${num(data.total.estimated_missing)} more records exist that ` +
+              'Recall could not read. The number above is exactly what it could.'
+            : (data.total.qualifiers || []).map((q) => q.text).join(' · '))
+      : null,
+    span.first
+      ? el('p', { class: 'mb-0' },
+          `From ${date(span.first)} to ${date(span.last)} — `
+          + plural(span.years, 'year') + ' of correspondence.')
+      : null,
+    span.implausible_dates
+      ? el('p', { class: 'qualified-note' },
+          span.implausible_dates === 1
+            ? '1 record carries a date that cannot be right, and is not counted '
+              + 'in that span. It is kept exactly as found and is still searchable.'
+            : `${num(span.implausible_dates)} records carry a date that cannot be `
+              + 'right, and are not counted in that span. They are kept exactly '
+              + 'as found and are still searchable.')
+      : null,
+    data.total.qualified
+      ? el('a', { class: 'health__link', href: '#/problems' },
+          'What is missing, and why')
       : null,
   );
 }
 
-function whatHappensNext() {
-  return el('div', { class: 'card' },
-    el('h2', { class: 'card__title mt-0' }, 'What Recall is going to do'),
-    el('ol', { style: 'max-width:68ch;padding-left:24px' },
-      el('li', {}, el('p', {},
-        el('strong', {}, 'Find your files. '),
-        'Recall searches the drives you tick for anything Outlook made — ' +
-        '.pst, .ost, .msg and a dozen older formats. It reads only names, sizes ' +
-        'and dates. It opens nothing.')),
-      el('li', {}, el('p', {},
-        el('strong', {}, 'Show you what it found. '),
-        'A list, biggest first, marking duplicates, files stored in the cloud, ' +
-        'and files Outlook is holding open.')),
-      el('li', {}, el('p', {},
-        el('strong', {}, 'Read the ones you choose. '),
-        'Mail, calendar entries, contacts and attachments come out into one ' +
-        'searchable archive. You can stop at any time and carry on later.')),
-      el('li', {}, el('p', {},
-        el('strong', {}, 'Tell you what it could not read. '),
-        'This matters more than the rest. If a file is damaged, or a year is ' +
-        'missing, Recall says so plainly and says how much is affected. It ' +
-        'never quietly fills in a gap.')),
-    ),
-    el('p', { class: 'mb-0 muted' },
-      'Your original files are never modified, moved, renamed or deleted at any ' +
-      'point. Everything Recall builds goes in its own separate folder.'),
+function kindCards(data) {
+  if (!data.by_kind.length) return null;
+  return el('div', { class: 'grid grid--4 mb-5' },
+    ...data.by_kind.map((k) => el('div', { class: 'stat' },
+      el('div', { class: 'stat__value' }, honest(k, { compact: true })),
+      el('div', { class: 'stat__label' }, KIND_WORDS[k.kind] || k.kind),
+    )),
   );
+}
+
+function undatedPanel(data) {
+  if (!data.undated) return null;
+  return notice('warning', `${plural(data.undated, 'record')} with no date at all`,
+    el('p', {},
+      'These are not on the timeline and not in any date range. No date has ' +
+      'been invented for them — they are kept exactly as they were found.'),
+    el('a', { class: 'btn', href: '#/search?undated=1' },
+      'See the undated records'),
+  );
+}
+
+function coveragePanel(data) {
+  const coverage = data.coverage || {};
+  if (!coverage.months) return null;
+
+  const gaps = Number(coverage.gap_months || 0);
+  const explained = Number(coverage.explained || 0);
+  const unexplained = Math.max(0, gaps - explained);
+
+  if (!gaps) {
+    return notice('good', 'Every month is accounted for',
+      `All ${plural(coverage.months, 'month')} between the first record and the ` +
+      'last have something in them.');
+  }
+
+  return notice(unexplained ? 'warning' : 'info',
+    `${plural(gaps, 'month')} with nothing in them`,
+    el('p', {},
+      unexplained
+        ? `${num(unexplained)} of them ${unexplained === 1 ? 'has' : 'have'} not ` +
+          'been explained yet. A gap can be perfectly real — a quiet year, a job ' +
+          'change — or it can mean a mailbox has not been found. Recall ' +
+          'cannot tell which, and will not guess.'
+        : 'You have explained all of them. They stay on the timeline, with your ' +
+          'notes, permanently.'),
+    el('a', { class: 'btn', href: '#/problems' },
+      'See the coverage map'),
+  );
+}
+
+// --- what to do next ------------------------------------------------------
+
+function nextSteps(data) {
+  if (!data.next_steps.length) return null;
+
+  return el('div', {},
+    el('h2', {}, 'What to do next'),
+    el('div', { class: 'grid grid--3 mb-5' },
+      ...data.next_steps.slice(0, 3).map((step) => el('div', { class: 'card' },
+        el('a', {
+          class: step.primary ? 'btn btn--primary btn--block' : 'btn btn--block',
+          href: step.href,
+        }, step.label),
+        el('p', { class: 'muted small', style: 'margin-top:12px;margin-bottom:0' },
+          step.why),
+      )),
+    ),
+    data.next_steps.length > 3
+      ? el('div', { class: 'btn-row mb-5' },
+          ...data.next_steps.slice(3).map((step) =>
+            el('a', { class: 'btn', href: step.href }, step.label)),
+        )
+      : null,
+  );
+}
+
+// --- the detail -----------------------------------------------------------
+
+function detailPanel(data) {
+  const s = data.sources;
+  const a = data.attachments;
+
+  const rows = [
+    ['Files found on this computer', num(s.found)],
+    ['Files read into the archive', num(s.read_ok)],
+    ['Files not read yet', num(s.pending)],
+    ['Files that could not be read', num(s.failed)],
+    ['Files that are duplicates of another', num(s.duplicates)],
+    ['Files stored in the cloud only', num(s.cloud_only)],
+    ['Total size of those files', bytes(s.total_bytes)],
+    ['People in the archive', num(data.people)],
+    ['Attachments kept', num(a.n)],
+    ['Of which are distinct files', num(a.distinct_files)],
+    ['Space used by the archive', bytes(data.storage.archive_bytes)],
+    ['Space used by attachments', bytes(data.storage.blobs_bytes)],
+  ];
+
+  return el('div', {},
+    el('h2', {}, 'The detail'),
+    !data.index.complete
+      ? notice('warning', 'The search index is not complete',
+          el('p', {}, data.index.note),
+          el('p', { class: 'mb-0' },
+            'Until it is, searching will not find those records. In the black ' +
+            'window, run:  recall index'))
+      : null,
+    el('div', { class: 'card' },
+      el('div', { class: 'table-wrap' },
+        el('table', {},
+          el('tbody', {}, ...rows.map(([label, value]) => el('tr', {},
+            el('th', { style: 'background:transparent;position:static;width:60%' }, label),
+            el('td', { class: 'num' }, value),
+          ))),
+        ),
+      ),
+      el('p', { class: 'muted small mb-0', style: 'margin-top:12px' },
+        'Everything Recall builds lives in:'),
+      el('pre', { class: 'raw' }, data.storage.workdir),
+      el('p', { class: 'muted small mb-0' },
+        'Your original Outlook files are not in there, and are never changed.'),
+    ),
+  );
+}
+
+// --- before anything has been found ---------------------------------------
+
+function gettingStarted() {
+  return el('div', {},
+    notice('info', 'Nothing has been found yet',
+      el('p', {},
+        'Recall has not searched this computer. The first step is to find out ' +
+        'what Outlook files you have — that reads file names and sizes ' +
+        'only, and opens nothing.'),
+    ),
+    el('div', { class: 'btn-row mb-5' },
+      el('a', { class: 'btn btn--primary btn--big', href: '#/sources' },
+        'Find Outlook files on this computer'),
+    ),
+    el('div', { class: 'card' },
+      el('h2', { class: 'card__title mt-0' }, 'What Recall is going to do'),
+      el('ol', { style: 'max-width:68ch;padding-left:24px' },
+        step('Find your files.',
+          'Recall searches the drives you tick for anything Outlook made — ' +
+          '.pst, .ost, .msg and a dozen older formats. It reads only names, ' +
+          'sizes and dates. It opens nothing.'),
+        step('Show you what it found.',
+          'A list, biggest first, marking duplicates, files stored in the ' +
+          'cloud, and files Outlook is holding open.'),
+        step('Read the ones you choose.',
+          'Mail, calendar entries, contacts and attachments come out into one ' +
+          'searchable archive. You can stop at any time and carry on later.'),
+        step('Tell you what it could not read.',
+          'This matters more than the rest. If a file is damaged, or a year is ' +
+          'missing, Recall says so plainly and says how much is affected. It ' +
+          'never quietly fills in a gap.'),
+      ),
+      el('p', { class: 'mb-0 muted' },
+        'Your original files are never modified, moved, renamed or deleted at ' +
+        'any point. Everything Recall builds goes in its own separate folder.'),
+    ),
+  );
+}
+
+function step(title, body) {
+  return el('li', {}, el('p', {}, el('strong', {}, title + ' '), body));
 }

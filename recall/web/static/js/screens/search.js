@@ -348,6 +348,8 @@ async function runSearch() {
     return;
   }
 
+  host.append(exportBar(total.value));
+
   const list = el('div', { class: 'stack' });
   data.results.forEach((result, index) => list.append(resultCard(result, index)));
   host.append(list);
@@ -368,6 +370,86 @@ async function runSearch() {
         `Showing ${num(state.offset + 1)} to ${num(state.offset + data.results.length)} of ${num(total.value)}`),
     ));
   }
+}
+
+// --- saving what is on screen ---------------------------------------------
+
+function exportBar(total) {
+  const status = el('div', { id: 'export-status' });
+  const withAttachments = el('input', { type: 'checkbox' });
+
+  const save = async (format) => {
+    clear(status);
+    status.append(loading('Saving'));
+    try {
+      const result = await api.exportSearch({
+        format,
+        q: state.q,
+        kind: state.kind || null,
+        person_id: state.person_id || null,
+        source_id: state.source_id || null,
+        folder_id: state.folder_id || null,
+        tag: state.tag || null,
+        has_attachments: state.has_attachments ? true : null,
+        undated: state.undated,
+        date_from: state.date_from || null,
+        date_to: state.date_to || null,
+        copy_attachments: withAttachments.checked,
+      });
+
+      clear(status);
+      const incomplete = result.files.filter((f) => !f.is_complete);
+      const lines = result.files.map((f) =>
+        `${f.file}\n    ${num(f.count)} records`
+        + (f.integrity_file ? `\n    what is missing: ${f.integrity_file}` : ''));
+      if (result.attachments) {
+        lines.push(
+          `${result.attachments.folder}\n    `
+          + `${num(result.attachments.copied)} attachments copied`
+          + (result.attachments.missing
+            ? `, ${num(result.attachments.missing)} missing`
+            : ''));
+      }
+      status.append(el('div', {
+        class: incomplete.length ? 'notice notice--warning' : 'notice notice--good',
+      },
+        el('div', { class: 'notice__title' }, result.message),
+        el('pre', { class: 'raw' }, lines.join('\n\n')),
+        incomplete.length
+          ? el('p', { class: 'qualified-note mb-0' },
+              'Read the note beside each file before relying on it. Recall has ' +
+              'written down exactly what is missing from what you just saved.')
+          : null,
+      ));
+    } catch (err) {
+      clear(status);
+      status.append(errorNotice(err));
+    }
+  };
+
+  return el('details', { class: 'mb-3' },
+    el('summary', {}, `Save these ${num(total)} results to a file`),
+    el('p', {},
+      'Saves exactly what is listed below, with a plain-language note of what ' +
+      'is missing or uncertain in this particular set of records. That note is ' +
+      'not optional.'),
+    el('label', { class: 'check' }, withAttachments,
+      el('span', {}, 'Also copy the attachments out into a folder',
+        el('span', { class: 'check__note' },
+          'Each one keeps its own name, with a list saying which message it '
+          + 'came from.'))),
+    el('div', { class: 'btn-row' },
+      el('button', { class: 'btn btn--primary', type: 'button', onclick: () => save('csv') },
+        'Save as CSV for Excel'),
+      el('button', { class: 'btn', type: 'button', onclick: () => save('xlsx') },
+        'Save as an Excel workbook'),
+      el('button', { class: 'btn', type: 'button', onclick: () => save('markdown') },
+        'Save as a readable document'),
+      el('button', { class: 'btn', type: 'button', onclick: () => save('json') },
+        'Save as JSON'),
+    ),
+    status,
+  );
 }
 
 function resultCard(result, index) {

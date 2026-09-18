@@ -274,3 +274,66 @@ def test_statement_rows_are_label_value_pairs(conn, settings):
     rows = statement.rows()
     assert ("Records exported", "42") in rows
     assert any("complete" in label.lower() for label, _ in rows)
+
+
+# --- Excel's own rules, which real mail breaks ----------------------------
+
+
+def test_xlsx_survives_control_characters_in_real_mail(archive, settings):
+    """openpyxl refuses to write them and Excel will not open a file with them.
+
+    Real mail is full of stray control bytes from thirty years of mail clients,
+    so an export that crashes on them is an export that does not work. This was
+    found by running the export against the real .ost on the build machine.
+    """
+    pytest.importorskip("openpyxl")
+
+    bell = chr(7)
+    null = chr(0)
+    unit_separator = chr(31)
+
+    archive.execute(
+        "INSERT INTO items(kind, dedup_key, subject, body_text, occurred_utc) "
+        "VALUES ('event', 'control-chars', ?, ?, '2005-06-01T09:00:00Z')",
+        (
+            f"Subject with {bell} a bell",
+            f"Body with {null} a null and {unit_separator} a unit separator",
+        ),
+    )
+
+    data, _, _ = run_export(archive, settings, fmt="xlsx", kind="calendar")
+    assert data.exists()
+
+    import openpyxl
+
+    workbook = openpyxl.load_workbook(data)
+    assert "Records" in workbook.sheetnames
+
+    subjects = [
+        cell.value
+        for row in workbook["Records"].iter_rows(min_row=2)
+        for cell in row
+        if isinstance(cell.value, str) and "a bell" in cell.value
+    ]
+    assert subjects, "the record is still there"
+    assert bell not in subjects[0], "the control character is gone"
+
+
+def test_xlsx_neutralises_formula_injection():
+    """Excel treats a leading = as a formula in a workbook just as in a CSV."""
+    pytest.importorskip("openpyxl")
+    from recall.export.xlsx_export import _cell
+
+    assert _cell("=1+1").startswith("'")
+    assert _cell("-- Tim McCarthy").startswith("'")
+    assert _cell("Quarterly figures") == "Quarterly figures"
+
+
+def test_xlsx_truncates_a_cell_too_long_for_excel():
+    """A cell cannot hold more than 32,767 characters, and a mail body can."""
+    pytest.importorskip("openpyxl")
+    from recall.export.xlsx_export import _cell
+
+    result = _cell("x" * 40_000)
+    assert len(result) < 33_000
+    assert "truncated for Excel" in result

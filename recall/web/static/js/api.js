@@ -54,6 +54,7 @@ export const api = {
   post: (path, data) => request(path, { method: 'POST', body: JSON.stringify(data ?? {}) }),
 
   health: () => request('/api/health'),
+  home: () => request('/api/home'),
 
   // --- sources ---
   scanTargets: () => request('/api/scan/targets'),
@@ -155,4 +156,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ format, kind, full }),
     }),
+  exportSearch: (params) =>
+    request('/api/export/search', { method: 'POST', body: JSON.stringify(params) }),
 };

@@ -40,6 +40,24 @@ class ExportRequest(BaseModel):
     out_path: str | None = None
 
 
+class SearchExportRequest(BaseModel):
+    """Export exactly what is on the Search screen."""
+
+    format: str = "csv"
+    q: str = ""
+    kind: str | None = None
+    person_id: int | None = None
+    source_id: int | None = None
+    folder_id: int | None = None
+    tag: str | None = None
+    has_attachments: bool | None = None
+    undated: bool = False
+    date_from: str | None = None
+    date_to: str | None = None
+    copy_attachments: bool = False
+    out_path: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Timeline
 # ---------------------------------------------------------------------------
@@ -402,3 +420,46 @@ def export(request: Request, body: ExportRequest) -> dict[str, Any]:
         "is_complete": statement.is_clean,
         "statement": statement.as_dict(),
     }
+
+
+@router.post("/export/search")
+def export_search_results(request: Request, body: SearchExportRequest) -> dict[str, Any]:
+    """Save a search result set, with an integrity statement for that set."""
+    from ..export import ExportError
+    from ..export.selection import export_search
+
+    try:
+        result = export_search(
+            _conn(request),
+            _settings(request),
+            fmt=body.format,
+            query=body.q,
+            kind=body.kind,
+            person_id=body.person_id,
+            source_id=body.source_id,
+            folder_id=body.folder_id,
+            tag=body.tag,
+            has_attachments=body.has_attachments,
+            undated=body.undated,
+            date_from=body.date_from,
+            date_to=body.date_to,
+            out_path=body.out_path,
+            copy_attachments=body.copy_attachments,
+        )
+    except ExportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"The file could not be written: {exc}"
+        ) from exc
+
+    incomplete = [f for f in result["files"] if not f["is_complete"]]
+    result["message"] = (
+        f"Saved {result['total_records']:,} record(s) to "
+        f"{len(result['files'])} file(s)."
+        + (
+            " Some of them are not complete - the note beside each one says why."
+            if incomplete else ""
+        )
+    )
+    return result

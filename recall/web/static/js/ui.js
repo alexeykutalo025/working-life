@@ -91,23 +91,59 @@ export function duration(seconds) {
 // qualified number without its qualifier.
 
 export function count(value, qualifiers) {
-  const list = (qualifiers || []).filter(Boolean);
+  // A qualifier arrives as {code, text, estimated_loss, ...} from the API, or
+  // as a plain string from a caller that built one. Both have to end up as
+  // words: stringifying the object gives "[object Object]", which is worse
+  // than no qualifier at all because it looks like the program is broken
+  // rather than like the number is.
+  const list = (qualifiers || [])
+    .map((q) => (typeof q === 'string' ? q : q && q.text))
+    .filter(Boolean);
+
   if (!list.length) return el('span', { class: 'strong' }, num(value));
 
+  const text = list.join(' · ');
   return el('span', {},
-    el('span', { class: 'strong qualified', title: list.join(' ') }, num(value)),
+    el('span', { class: 'strong qualified', title: text }, num(value)),
     ' ',
-    el('span', { class: 'qualified-note' }, list.join(' ')),
+    el('span', { class: 'qualified-note' }, text),
   );
 }
 
-export function honest(envelope) {
+export function honest(envelope, { compact = false } = {}) {
   // The server sends {value, qualified, qualifiers:[...]}; anything else is a
   // plain number and is shown plainly.
   if (envelope && typeof envelope === 'object' && 'value' in envelope) {
+    if (compact) return compactCount(envelope);
     return count(envelope.value, envelope.qualifiers);
   }
   return el('span', { class: 'strong' }, num(envelope));
+}
+
+// A qualified number in a row of cards. Spelling the reason out on every card
+// repeats one sentence four times and buries the numbers it is qualifying, so
+// the marker is short and the reason is on the card's title attribute and one
+// click away. The rule still holds: the number is never shown unmarked.
+export function compactCount(envelope) {
+  const reasons = (envelope.qualifiers || [])
+    .map((q) => (typeof q === 'string' ? q : q && q.text))
+    .filter(Boolean);
+
+  if (!reasons.length) return el('span', {}, num(envelope.value));
+
+  const summary = envelope.estimated_missing
+    ? `about ${num(envelope.estimated_missing)} more could not be read`
+    : 'not the whole story';
+
+  return el('span', { title: reasons.join(' · ') },
+    el('span', { class: 'qualified' }, num(envelope.value)),
+    ' ',
+    el('a', {
+      class: 'qualified-note',
+      href: '#/problems',
+      style: 'font-size:var(--size-small)',
+    }, summary),
+  );
 }
 
 // --- tags -----------------------------------------------------------------
