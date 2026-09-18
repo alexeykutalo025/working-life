@@ -64,6 +64,10 @@ _CHARSET_ALIASES = {
 #: Tried in order when nothing is declared and charset-normalizer is unavailable.
 _FALLBACKS = ("utf-8", "cp1252", "mac_roman", "cp850", "latin-1")
 
+#: Below this many bytes, statistical encoding detection is guessing. Subject
+#: lines and display names are routinely shorter than this.
+_SHORT_RUN = 64
+
 
 def decode_bytes(data: bytes, declared: str | None = None) -> DecodedText:
     """Bytes to text, using the declared charset as a hint and not as gospel.
@@ -97,6 +101,17 @@ def decode_bytes(data: bytes, declared: str | None = None) -> DecodedText:
         return DecodedText(text, "utf-8", 0.9)
     except UnicodeDecodeError:
         pass
+
+    # Statistical detection needs enough bytes to have anything to work with.
+    # On a short header it is guessing: "Café du Nord" in cp1252 is twelve
+    # bytes, and charset-normalizer reads it as Arabic. For short undeclared
+    # runs in mail the answer is cp1252 - that is what Windows mailers wrote -
+    # so it is used directly rather than put to a vote it cannot win.
+    if len(data) < _SHORT_RUN:
+        try:
+            return DecodedText(data.decode("cp1252"), "cp1252", 0.7)
+        except UnicodeDecodeError:
+            pass
 
     try:
         from charset_normalizer import from_bytes

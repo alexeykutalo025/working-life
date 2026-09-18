@@ -37,6 +37,7 @@ from .integrity.sources import (
 from .logging_setup import get_logger
 from .models import Kind, ParsedItem, ParseState, Role, Severity
 from .normalize.dedup import dedup_key_for
+from .normalize.attachments import BlobStore, store_attachments
 from .normalize.people import PeopleResolver
 from .parsers.base import load_all_parsers, parser_for
 
@@ -73,6 +74,7 @@ class ExtractProgress:
     message: str = ""
     started: float = field(default_factory=time.monotonic)
     failures: list[tuple[str, str]] = field(default_factory=list)
+    detail_threads: dict = field(default_factory=dict)
 
     @property
     def items_per_sec(self) -> float:
@@ -93,6 +95,7 @@ class ExtractProgress:
             "message": self.message,
             "items_per_sec": round(self.items_per_sec, 1),
             "failures": self.failures,
+            "threads": self.detail_threads,
         }
 
 
@@ -134,6 +137,7 @@ class Extractor:
         self.on_progress = on_progress
         self.progress = ExtractProgress()
         self.people = PeopleResolver(conn, settings)
+        self.blobs = BlobStore(settings.blobs_path)
         self._folder_cache: dict[tuple[int, str], int] = {}
         load_all_parsers()
 
@@ -370,6 +374,7 @@ class Extractor:
 
         self._link_source(item_id, source_id, folder_id, item.native_id)
         self._write_participants(item_id, item)
+        self._write_attachments(item_id, item)
         self._write_notes(item_id, source_id, item)
 
         if item.categories:
@@ -399,6 +404,30 @@ class Extractor:
                 "VALUES (?, ?, ?, ?, ?)",
                 (item_id, person_id, identity_id, participant.role, participant.response_status),
             )
+
+    def _write_attachments(self, item_id: int, item: ParsedItem) -> None:
+        """Store the bytes once, and pull out text for search."""
+        if not item.attachments:
+            return
+        try:
+            stored, failed = store_attachments(
+                self.conn,
+                self.blobs,
+                item_id,
+                item.attachments,
+                size_cap=self.settings.extract.attachment_text_cap_bytes,
+            )
+        except Exception as exc:  # noqa: BLE001 - attachments never fail an item
+            log.warning("Attachments for item %d could not be saved: %s", item_id, exc)
+            log_error(
+                self.conn, "extract",
+                f"Attachments for one record could not be saved: {exc}",
+                detail=repr(exc),
+            )
+            return
+        self.progress.attachments_written += stored
+        if failed:
+            log.debug("%d attachment(s) on item %d could not be read", failed, item_id)
 
     def _write_notes(self, item_id: int, source_id: int, item: ParsedItem) -> None:
         """Parser-level observations become findings attached to the item."""
@@ -546,6 +575,18 @@ class Extractor:
 
     def _run_post_checks(self) -> None:
         """Integrity checks run at the end of every extraction (spec section 9)."""
+        # Threading is a global property - one late message can join two
+        # existing threads - so it is rebuilt rather than maintained.
+        try:
+            from .normalize.threads import rebuild_threads
+
+            with transaction(self.conn):
+                result = rebuild_threads(self.conn)
+            self.progress.detail_threads = result
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Conversations could not be rebuilt: %s", exc)
+            log_error(self.conn, "extract", f"Rebuilding conversations failed: {exc}")
+
         # People's counts and date spans are derived, so they are recomputed
         # rather than maintained incrementally: an incremental count that drifts
         # is worse than no count, because it looks authoritative.

@@ -361,11 +361,27 @@ def _message_id(subject: str, sender: str, date: datetime) -> str:
 
 
 def _rewrite_body_as_cp1252(raw: bytes, body: str) -> bytes:
-    """Replace a message's body with genuine cp1252 bytes and say so."""
-    head, _, _ = raw.partition(b"\r\n\r\n")
+    """Replace a message's body with genuine cp1252 bytes and say so.
+
+    EmailMessage.as_bytes() separates headers from body with a bare newline,
+    not CRLF, so the split has to try both - getting this wrong appends the new
+    body to the old one instead of replacing it.
+    """
+    for separator in (b"\r\n\r\n", b"\n\n"):
+        head, found, _ = raw.partition(separator)
+        if found:
+            break
+    else:  # pragma: no cover - a message always has a header/body separator
+        raise ValueError("the generated message has no header/body separator")
+
     head = head.replace(b'charset="utf-8"', b'charset="iso-8859-1"')
-    head = head.replace(b"Content-Transfer-Encoding: base64", b"Content-Transfer-Encoding: 8bit")
-    head = head.replace(b"Content-Transfer-Encoding: quoted-printable", b"Content-Transfer-Encoding: 8bit")
+    head = head.replace(
+        b"Content-Transfer-Encoding: base64", b"Content-Transfer-Encoding: 8bit"
+    )
+    head = head.replace(
+        b"Content-Transfer-Encoding: quoted-printable",
+        b"Content-Transfer-Encoding: 8bit",
+    )
     return head + b"\r\n\r\n" + body.encode("cp1252", errors="replace")
 
 
