@@ -1,0 +1,192 @@
+# ============================================================================
+#  Recall - settings
+# ============================================================================
+#  This file is yours to edit. It is plain text: open it in Notepad, change a
+#  value, save, and run Recall again. Lines starting with # are notes and are
+#  ignored by the program.
+#
+#  Every setting below has a sensible default. You do not have to change any of
+#  them to use the program. The one worth filling in early is [identity] me,
+#  further down, because it teaches Recall which email addresses are YOURS.
+# ============================================================================
+
+
+[workdir]
+# Where Recall keeps everything it builds: the archive database, saved
+# attachments, logs and exports. This folder is created for you.
+# Your original Outlook files are NEVER written to, moved, or changed.
+# A relative path is relative to the folder this file sits in.
+path = "workdir"
+
+
+[scan]
+# ---- Which folders to search for Outlook files -----------------------------
+# Leave `roots` empty to use the automatic default, which is:
+#     every fixed drive on this computer  (C:\, D:\, ...)
+#   + your OneDrive folder
+#   + %LOCALAPPDATA%\Microsoft\Outlook   (where Outlook keeps its own files)
+#
+# A first full search of every drive can take 10 to 60 minutes. That is normal.
+# You can stop it at any time with Ctrl-C and start it again later; it picks up
+# where it left off and never loses what it already found.
+#
+# To search only one drive, either tick a single drive on the "Find Outlook
+# files on this computer" screen, or list it here, for example:
+#     roots = ["D:\\", "C:\\Users\\Tim\\Documents"]
+roots = []
+
+# Folders never searched. These hold no mail, and searching them wastes hours.
+exclude_dirs = [
+    "Windows",
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "$Recycle.Bin",
+    "System Volume Information",
+    "node_modules",
+    "AppData\\Local\\Temp",
+    "AppData\\Local\\Packages",
+    "AppData\\Local\\Microsoft\\WindowsApps",
+    ".git",
+]
+
+# File types Recall looks for. Files are also checked by their internal
+# signature, so a .pst renamed to .backup is still found.
+extensions = [
+    ".pst", ".ost", ".msg", ".eml", ".mbox", ".mbx", ".dbx",
+    ".ics", ".vcs", ".vcf", ".olm", ".wab", ".pab",
+]
+
+# Files larger than this are not fingerprinted during the first pass, because
+# reading 20 GB just to compare it is slow. They are fingerprinted later, on
+# demand, when you ask Recall to check for duplicates. 0 means "no limit".
+hash_size_cap_mb = 2048
+
+# Anything smaller than this many bytes is recorded but flagged as
+# `zero_or_tiny`, because a real mail store is never this small.
+min_plausible_bytes = 1024
+
+# Follow Windows shortcuts and directory junctions. Off by default: junctions
+# cause infinite loops and endless duplicate work.
+follow_symlinks = false
+
+
+[onedrive]
+# OneDrive "cloud-only" files look like files, but their contents are not on
+# this computer. Opening one makes Windows download it, which can be slow and
+# can cost money on a metered connection.
+#
+# Recall NEVER downloads them on its own. It lists them and waits for you to
+# ask, on the Sources screen, with the total download size shown first.
+# Setting this to true would still require you to click; it only pre-ticks.
+auto_hydrate = false
+
+# Refuse to download a single batch larger than this, as a safety net.
+max_hydrate_batch_gb = 5
+
+
+[extract]
+# How many records are written to the database at once. Larger is faster but
+# uses more memory. 1000 is a good balance.
+batch_size = 1000
+
+# Stop after this many items per file. 0 means "no limit - read everything".
+# The --sample option on the command line overrides this. Sampling is the fast
+# way to check that a file reads correctly before committing to a long run.
+sample_limit = 0
+
+# Preferred reader for .pst and .ost files: "auto", "pypff" or "com".
+#   auto  - try the fast built-in reader, fall back to Outlook if it struggles
+#   pypff - only the fast built-in reader
+#   com   - only Microsoft Outlook itself (slower, but it understands everything)
+pst_backend = "auto"
+
+# When the fast reader and Outlook are both available, read a sample with each
+# and compare the counts. Disagreement is reported as a problem rather than
+# quietly ignored. Costs a little time; worth it.
+cross_check_backends = true
+
+# Attachments larger than this are saved, but not searched inside.
+attachment_text_cap_mb = 50
+
+# Read text out of scanned images and faxes. Off by default because it needs
+# extra software (Tesseract) installed separately, and it is slow.
+ocr_enabled = false
+
+
+[identity]
+# ---- YOUR email addresses, across all the decades --------------------------
+# This is the most useful thing you can tell Recall. It uses this list to work
+# out which messages you sent, who you corresponded with, and to keep you out
+# of your own "top correspondents" list.
+#
+# Add every address you have ever used, one per line, in quotes:
+#     me = [
+#         "tim@thebusinessofgood.org",
+#         "tmccarthy@contractmktg.com",
+#     ]
+#
+# If you leave this empty, Recall will notice addresses that send a lot of mail
+# and ask you on the Problems screen: "Is this one of your addresses?"
+me = []
+
+# Email providers that ignore dots before the @ sign, so that
+# first.last@gmail.com and firstlast@gmail.com are the same mailbox.
+dot_insensitive_domains = ["gmail.com", "googlemail.com"]
+
+# How similar two names must be before Recall SUGGESTS they are one person.
+# It never merges anyone automatically. 0.0 suggests everything, 1.0 suggests
+# only exact matches. 0.92 is strict.
+merge_suggest_threshold = 0.92
+
+# An address used by a whole office rather than one human - info@, sales@ and
+# so on. These are flagged so they never masquerade as a single person.
+role_mailbox_locals = [
+    "info", "office", "admin", "sales", "support", "help", "noreply",
+    "no-reply", "donotreply", "postmaster", "mailer-daemon", "contact",
+    "enquiries", "inquiries", "accounts", "billing", "hr", "jobs", "careers",
+    "newsletter", "marketing", "webmaster", "abuse", "security",
+]
+
+# One address showing more than this many different display names probably
+# belongs to more than one person. Flagged, never split automatically.
+max_display_names_per_address = 8
+
+
+[integrity]
+# ---- How Recall decides something is missing -------------------------------
+# A month whose count falls below this fraction of the previous year's typical
+# month is reported as a quiet period worth explaining. 0.15 = 15%.
+soft_gap_ratio = 0.15
+
+# A file that reports N records but yields fewer than this fraction of them is
+# reported as only partly read. 0.95 = we expect to get at least 95% out.
+partial_parse_threshold = 0.95
+
+# Any address sending more than this share of everything, and not listed in
+# [identity] me, is queried as possibly being yours. 0.02 = 2%.
+self_identity_share = 0.02
+
+# Two files sharing more than this share of their records are reported as the
+# same mailbox saved twice. 0.90 = 90%.
+duplicate_store_overlap = 0.90
+
+# Dates before this year are kept exactly as found, and flagged as
+# implausible. Nothing is ever corrected.
+implausible_before_year = 1970
+
+
+[server]
+# The local web page. Recall binds to 127.0.0.1 only, which means this computer
+# and nothing else - it is not reachable from your network or the internet.
+host = "127.0.0.1"
+port = 8765
+open_browser = true
+
+
+[logging]
+# How much detail is written to workdir/logs/. "DEBUG" is the most detailed and
+# is what you want if you are sending a log to someone for help.
+file_level = "DEBUG"
+console_level = "INFO"
+keep_days = 90
