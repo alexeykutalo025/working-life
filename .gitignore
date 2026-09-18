@@ -1,0 +1,22 @@
+# Runtime working directory — the archive database, blobs, logs and exports.
+# Never committed: it contains the user's mail.
+workdir/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+
+# Real-file test fixtures (user-supplied PST/OST, never committed)
+tests/fixtures/real/
+tests/fixtures/generated/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

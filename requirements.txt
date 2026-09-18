@@ -1,0 +1,44 @@
+# Recall — Outlook Archive Tool
+# Libraries named in OUTLOOK_ARCHIVE_BUILD_SPEC.md section 2 (TECH STACK).
+# Install with:  pip install -r requirements.txt
+#
+# Python 3.11+ required.
+# No front-end deps: plain HTML + CSS + vanilla JS, no npm, no build step.
+
+# --- Core: server, CLI, models ---
+fastapi
+uvicorn
+typer
+pydantic>=2
+
+# --- Parsing ---
+libpff-python        # .pst / .ost (pypff)   -- see NOTE below
+extract-msg          # .msg
+icalendar            # .ics
+vobject              # .vcs, .vcf
+charset-normalizer   # legacy encodings: CP1252, Latin-1, mojibake repair
+
+# .eml / .mbox use stdlib email + mailbox
+# .olm uses stdlib zipfile + xml.etree
+# .dbx / .mbx are implemented in-project (no maintained lib exists)
+
+# --- Outlook COM fallback backend (Windows only) ---
+pywin32
+
+# --- Attachment text extraction ---
+python-docx
+openpyxl
+pypdf
+python-pptx
+
+# --- Tests ---
+pytest
+
+# --- Optional, off by default ---
+# OCR. Also needs the Tesseract binary installed separately (UB Mannheim build on Windows).
+# pytesseract
+
+# NOTE on libpff-python: PyPI usually ships it as a source tarball with no Windows wheel,
+# so a plain `pip install` may fail without a C build toolchain. If it does, either install
+# a prebuilt wheel for your Python version or skip it — the Outlook COM backend
+# (pywin32) can handle .pst/.ost on its own, just more slowly.
