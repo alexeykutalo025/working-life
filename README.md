@@ -103,6 +103,9 @@ which is always there and cannot be dismissed. It says, in plain words, what is
 wrong — *"2 files could not be read in full · 3 unexplained gaps · 6 people to
 confirm"*. Clicking it takes you to Problems.
 
+> The button at the top right sets how bright the screen is: **match my
+> computer**, **light**, or **dark**. Press it to move between the three.
+
 ### Files found
 Every Outlook file on this computer, biggest first. For each one: its size, its
 date, and its condition — whether it is a duplicate of another file, whether it
@@ -111,6 +114,18 @@ holding it open, and whether it has been read yet.
 
 This is also where you start a search, start reading, and download cloud-only
 files.
+
+**"Find Outlook files on this computer"** offers every drive, ticked to start
+with. Untick anything you want left out — searching one drive is much faster
+than searching all of them. If you already know where your old mail is, press
+**"Choose a specific folder…"** and open folders until you reach it; pointing
+Recall straight at one folder takes seconds instead of an hour. Folders you
+choose are offered again next time.
+
+A folder that Windows normally skips — `Windows`, `Program Files` and a few
+others — *is* searched when you choose it by hand, and the chooser says so.
+Those folders are skipped during a whole-drive search only because they waste
+time, not because they are forbidden.
 
 ### Search
 One large box. Type anything you remember.
@@ -130,6 +145,20 @@ names, **and the text inside PDF, Word, Excel and PowerPoint attachments**.
 A search will never show you an error message. If what you typed is not a valid
 search, Recall looks for the whole thing as a phrase instead and tells you it
 did that.
+
+**Readable list or Table.** The list is easier to read: one result at a time,
+with the words you searched for marked. The table shows every column, and it is
+exactly the table you get in the spreadsheet — same columns, same headings, so
+you can check one against the other. Messages, calendar entries and contacts do
+not share columns, so the table shows one kind at a time and gives you buttons
+to switch.
+
+**"Download these results as Excel"** hands you one workbook. Inside it: a sheet
+called **Integrity** first, saying what is missing or uncertain in those exact
+records, then a sheet for each kind — Messages, Calendar, Contacts, Tasks,
+Notes. A copy is kept in Recall's own exports folder too, so nothing is lost if
+you cannot find the download. The other formats — CSV, a readable document, and
+JSON — are under "Other ways to save these results".
 
 ### Timeline
 Everything by date. Year bars first; click a year for its months, a month for

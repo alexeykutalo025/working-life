@@ -11,8 +11,8 @@
 
 import { api } from '../api.js';
 import {
-  clear, date, dateRange, el, empty, errorNotice, loading, modal, mount,
-  notice, num, plural, setTitle, tag,
+  clear, date, dateRange, debounce, el, empty, errorDialog, errorNotice,
+  loading, modal, mount, notice, num, plural, setTitle, stat, tag,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -43,7 +43,7 @@ async function renderList() {
         el('input', {
           type: 'search', id: 'people-search',
           placeholder: 'a name or an email address',
-          oninput: debounced(() => {
+          oninput: debounce(() => {
             state.search = document.getElementById('people-search').value.trim();
             loadList();
           }),
@@ -286,7 +286,7 @@ async function confirmMerge(proposal) {
             await api.mergePeople(keepId, mergeId);
             await Promise.all([loadMergeQueue(), loadList()]);
           } catch (err) {
-            modalError(err);
+            errorDialog(err);
           }
         },
       }, 'Join them together'),
@@ -309,16 +309,6 @@ async function dismissProposal(proposal, card) {
       await api.setFindingState(findingId, 'wont_fix', 'The user says these are different people');
     } catch { /* the card is already gone; the state is cosmetic here */ }
   }
-}
-
-function modalError(err) {
-  const dialog = modal({
-    title: 'That did not work',
-    body: el('p', {}, err?.message || String(err)),
-    actions: [el('button', {
-      class: 'btn btn--primary', type: 'button', onclick: () => dialog.close(),
-    }, 'Close')],
-  });
 }
 
 // --- one person -----------------------------------------------------------
@@ -419,7 +409,7 @@ async function renderProfile(personId) {
             try {
               await api.unmergePerson(m.id);
               renderProfile(personId);
-            } catch (err) { modalError(err); }
+            } catch (err) { errorDialog(err); }
           },
         }, 'Separate this one again'),
       ))),
@@ -438,13 +428,6 @@ async function renderProfile(personId) {
 
   root.append(recentItems(p));
   mount(root);
-}
-
-function stat(label, value) {
-  return el('div', { class: 'stat' },
-    el('div', { class: 'stat__value' }, value),
-    el('div', { class: 'stat__label' }, label),
-  );
 }
 
 function identitiesPanel(p) {
@@ -493,29 +476,48 @@ function sparkline(perYear) {
   const slot = (width - pad * 2) / perYear.length;
   const barW = Math.max(4, slot * 0.7);
 
+  const quiet = perYear.filter((y) => !y.count).length;
+
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
   svg.setAttribute('width', '100%');
   svg.setAttribute('role', 'img');
+  // A summary, not a recital. Reading out forty year-and-count pairs is not a
+  // description of a chart, it is the chart read aloud badly.
   svg.setAttribute('aria-label',
     `Records per year from ${perYear[0].year} to ${perYear[perYear.length - 1].year}. `
-    + perYear.map((y) => `${y.year}: ${y.count}`).join(', '));
+    + `${perYear.length - quiet} of ${perYear.length} years have records; `
+    + `${quiet} have none and are shown hatched. The busiest year holds ${max}.`);
   svg.style.maxWidth = '100%';
   svg.style.height = 'auto';
+  svg.append(sparkDefs());
 
   perYear.forEach((y, i) => {
     const x = pad + i * slot + (slot - barW) / 2;
     const h = (y.count / max) * (height - 46);
     const rect = document.createElementNS(SVG_NS, 'rect');
     rect.setAttribute('x', String(x));
-    rect.setAttribute('y', String(height - 26 - h));
     rect.setAttribute('width', String(barW));
-    rect.setAttribute('height', String(Math.max(y.count ? 2 : 0, h)));
-    rect.setAttribute('fill', y.count ? 'var(--accent)' : 'transparent');
+
+    if (y.count) {
+      rect.setAttribute('y', String(height - 26 - h));
+      rect.setAttribute('height', String(Math.max(2, h)));
+      rect.setAttribute('fill', 'var(--accent)');
+    } else {
+      // A year with nothing in it is hatched and full height, like every other
+      // chart in this program. Drawing it as an invisible bar was the one place
+      // an empty period slid past the eye unremarked.
+      rect.setAttribute('y', String(20));
+      rect.setAttribute('height', String(height - 46));
+      rect.setAttribute('fill', 'url(#spark-hatch)');
+      rect.setAttribute('stroke', 'var(--gap-ink)');
+      rect.setAttribute('stroke-width', '1');
+    }
+
     const title = document.createElementNS(SVG_NS, 'title');
     title.textContent = y.count
       ? `${y.year}: ${y.count} records`
-      : `${y.year}: nothing`;
+      : `${y.year}: no data`;
     rect.append(title);
     svg.append(rect);
 
@@ -531,9 +533,41 @@ function sparkline(perYear) {
     }
   });
 
-  const wrap = el('div', { style: 'overflow-x:auto' });
+  const wrap = el('div', { class: 'svg-scroll' });
   wrap.append(svg);
-  return wrap;
+  return el('div', {}, wrap,
+    quiet
+      ? el('p', { class: 'muted small mb-0' },
+          `${plural(quiet, 'year')} with no data at all, shown hatched.`)
+      : null,
+  );
+}
+
+/** The hatching that means "no data", the same idea as the other two charts. */
+function sparkDefs() {
+  const defs = document.createElementNS(SVG_NS, 'defs');
+  const pattern = document.createElementNS(SVG_NS, 'pattern');
+  pattern.setAttribute('id', 'spark-hatch');
+  pattern.setAttribute('width', '6');
+  pattern.setAttribute('height', '6');
+  pattern.setAttribute('patternUnits', 'userSpaceOnUse');
+  pattern.setAttribute('patternTransform', 'rotate(45)');
+
+  const bg = document.createElementNS(SVG_NS, 'rect');
+  bg.setAttribute('width', '6');
+  bg.setAttribute('height', '6');
+  bg.setAttribute('fill', 'var(--surface-2)');
+  pattern.append(bg);
+
+  const stripe = document.createElementNS(SVG_NS, 'rect');
+  stripe.setAttribute('width', '2.5');
+  stripe.setAttribute('height', '6');
+  stripe.setAttribute('fill', 'var(--gap-ink)');
+  stripe.setAttribute('opacity', '0.6');
+  pattern.append(stripe);
+
+  defs.append(pattern);
+  return defs;
 }
 
 function recentItems(p) {
@@ -561,9 +595,4 @@ function recentItems(p) {
       ),
     ),
   );
-}
-
-let debounceHandle;
-function debounced(fn, ms = 300) {
-  return () => { clearTimeout(debounceHandle); debounceHandle = setTimeout(fn, ms); };
 }

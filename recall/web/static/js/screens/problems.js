@@ -10,17 +10,13 @@
 
 import { api } from '../api.js';
 import {
-  clear, el, empty, errorNotice, loading, modal, mount, notice, num, plural,
-  setTitle, severityTag,
+  clear, el, empty, errorDialog, errorNotice, field, loading, modal, monthName,
+  mount, notice, num, plural, setTitle, severityTag,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const MONTH_LETTERS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
-const MONTH_NAMES = [
-  'January', 'February', 'March', 'April', 'May', 'June',
-  'July', 'August', 'September', 'October', 'November', 'December',
-];
 
 const state = { severity: '', klass: '', showState: 'open' };
 
@@ -120,7 +116,7 @@ function mapSvg(data) {
       }));
   });
 
-  const wrap = el('div', { style: 'overflow-x:auto' });
+  const wrap = el('div', { class: 'svg-scroll' });
   wrap.append(svg);
   return wrap;
 }
@@ -143,7 +139,7 @@ function monthCell(month, x, y, size, max) {
     rect.setAttribute('stroke', 'var(--border)');
     rect.setAttribute('stroke-width', '1');
     rect.setAttribute('stroke-dasharray', '2 3');
-    label = `${MONTH_NAMES[month.number - 1]} ${month.month.slice(0, 4)}: outside the archive's span`;
+    label = `${monthName(month.number)} ${month.month.slice(0, 4)}: outside the archive's span`;
   } else if (!month.count) {
     rect.setAttribute('fill', 'url(#map-hatch)');
     rect.setAttribute('stroke', 'var(--gap-ink)');
@@ -151,7 +147,7 @@ function monthCell(month, x, y, size, max) {
     const why = month.gap_class === 'source_contradiction'
       ? 'no data - and a file that should cover it gave up nothing'
       : 'no data';
-    label = `${MONTH_NAMES[month.number - 1]} ${month.month.slice(0, 4)}: ${why}`
+    label = `${monthName(month.number)} ${month.month.slice(0, 4)}: ${why}`
       + (month.explained ? ' (you have explained this)' : '');
     if (month.explained) {
       rect.setAttribute('opacity', '0.45');
@@ -162,7 +158,7 @@ function monthCell(month, x, y, size, max) {
     const intensity = max > 0 ? Math.sqrt(month.count / max) : 0;
     rect.setAttribute('fill', 'var(--accent)');
     rect.setAttribute('opacity', String(0.2 + intensity * 0.8));
-    label = `${MONTH_NAMES[month.number - 1]} ${month.month.slice(0, 4)}: `
+    label = `${monthName(month.number)} ${month.month.slice(0, 4)}: `
       + `${num(month.count)} records from ${plural(month.sources, 'file')}`;
     if (month.gap_class === 'soft_gap') {
       rect.setAttribute('stroke', 'var(--high)');
@@ -242,7 +238,7 @@ function mapLegend() {
     svg.setAttribute('aria-hidden', 'true');
     svg.append(hatchDefs());
     svg.append(build());
-    return el('span', { class: 'row', style: 'gap:6px' }, svg, el('span', {}, label));
+    return el('span', { class: 'row row--tight' }, svg, el('span', {}, label));
   };
 
   const box = (fill, opacity, stroke) => () => {
@@ -259,7 +255,7 @@ function mapLegend() {
     return rect;
   };
 
-  return el('div', { class: 'row', style: 'gap:20px;margin-top:12px' },
+  return el('div', { class: 'row row--wide mt-3' },
     swatch(box('var(--accent)', '0.25'), 'a few records'),
     swatch(box('var(--accent)', '1'), 'a great many'),
     swatch(box('url(#map-hatch)', null, 'var(--gap-ink)'), 'no data at all'),
@@ -317,11 +313,6 @@ function renderFilters() {
   ));
 }
 
-function field(label, control) {
-  const id = `f${Math.random().toString(36).slice(2)}`;
-  control.id = id;
-  return el('div', { class: 'field' }, el('label', { for: id }, label), control);
-}
 
 // --- the list -------------------------------------------------------------
 
@@ -529,7 +520,7 @@ async function setState(finding, newState, note) {
     await api.setFindingState(finding.id, newState, note);
     await Promise.all([loadList(), loadMap()]);
   } catch (err) {
-    showError(err);
+    errorDialog(err);
   }
 }
 
@@ -605,7 +596,7 @@ async function retry(finding) {
             showRetryResult(result);
             await Promise.all([loadList(), loadMap()]);
           } catch (err) {
-            showError(err);
+            errorDialog(err);
           }
         },
       }, 'Yes, read it again'),
@@ -625,16 +616,6 @@ function showRetryResult(result) {
         `before: ${num(result.was_count)} records (${result.was_backend || 'unknown'})\n`
         + `after:  ${num(result.now_count)} records (${result.now_backend || 'unknown'})`),
     ),
-    actions: [el('button', {
-      class: 'btn btn--primary', type: 'button', onclick: () => dialog.close(),
-    }, 'Close')],
-  });
-}
-
-function showError(err) {
-  const dialog = modal({
-    title: 'That did not work',
-    body: el('p', {}, err?.message || String(err)),
     actions: [el('button', {
       class: 'btn btn--primary', type: 'button', onclick: () => dialog.close(),
     }, 'Close')],

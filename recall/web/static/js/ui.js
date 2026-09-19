@@ -139,9 +139,8 @@ export function compactCount(envelope) {
     el('span', { class: 'qualified' }, num(envelope.value)),
     ' ',
     el('a', {
-      class: 'qualified-note',
+      class: 'qualified-note qualified-note__link',
       href: '#/problems',
-      style: 'font-size:var(--size-small)',
     }, summary),
   );
 }
@@ -336,4 +335,98 @@ export function debounce(fn, ms = 250) {
     clearTimeout(handle);
     handle = setTimeout(() => fn(...args), ms);
   };
+}
+
+// --- form fields ----------------------------------------------------------
+//
+// A label above a control, with optional help below it. Four screens each had
+// their own version of this, all slightly different, and a fifth wrote the
+// markup by hand.
+
+let fieldCounter = 0;
+
+export function field(label, control, help) {
+  if (!control.id) {
+    fieldCounter += 1;
+    control.id = `field-${fieldCounter}`;
+  }
+  return el('div', { class: 'field' },
+    el('label', { for: control.id }, label),
+    control,
+    help ? el('div', { class: 'field__help' }, help) : null,
+  );
+}
+
+/** A labelled dropdown, the commonest field by far. */
+export function selectField(label, options, { value = '', onChange, help } = {}) {
+  const select = el('select', {
+    onchange: (e) => { if (onChange) onChange(e.target.value); },
+  });
+  for (const option of options) {
+    select.append(el('option', {
+      value: option.value,
+      selected: String(option.value) === String(value),
+    }, option.label));
+  }
+  return field(label, select, help);
+}
+
+// --- a number worth looking at --------------------------------------------
+
+/**
+ * One figure with its label. `alarming` is for a number that genuinely needs
+ * attention - using the loud style for "all of them" teaches the user to
+ * ignore the colour that matters.
+ */
+export function stat(label, value, note, { alarming = false, lead = false } = {}) {
+  return el('div', { class: 'stat' },
+    el('div', {
+      class: `stat__value${lead ? ' stat__value--lead' : ''}${alarming ? ' qualified' : ''}`,
+    }, value),
+    el('div', { class: 'stat__label' }, label),
+    note ? el('span', { class: alarming ? 'stat__qualifier' : 'check__note' }, note) : null,
+  );
+}
+
+// --- words for things -----------------------------------------------------
+//
+// These were written out in four places between them, and drifted: one screen
+// faked the singular by stripping an "s" off the plural.
+
+const KIND_WORDS = {
+  message: ['message', 'messages'],
+  event: ['calendar entry', 'calendar entries'],
+  contact: ['contact', 'contacts'],
+  task: ['task', 'tasks'],
+  note: ['note', 'notes'],
+};
+
+export function kindLabel(kind, { one = false } = {}) {
+  const words = KIND_WORDS[kind];
+  if (!words) return kind || 'record';
+  const word = one ? words[0] : words[1];
+  return word.charAt(0).toUpperCase() + word.slice(1);
+}
+
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+export function monthName(m) { return MONTHS[(m || 1) - 1]; }
+
+// --- the dialog every screen needed ---------------------------------------
+
+/** "That did not work", with one Close button. Was written three times. */
+export function errorDialog(err) {
+  const dialog = modal({
+    title: 'That did not work',
+    body: el('div', {}, el('p', {}, (err && err.message) || String(err))),
+    actions: [
+      el('button', {
+        class: 'btn btn--primary', type: 'button', onclick: () => dialog.close(),
+      }, 'Close'),
+    ],
+  });
+  return dialog;
 }

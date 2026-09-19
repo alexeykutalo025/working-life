@@ -160,7 +160,7 @@ function participants(item) {
   const rows = [];
   for (const [role, people] of byRole) {
     rows.push(el('tr', {},
-      el('th', { style: 'width:140px;background:transparent;position:static' },
+      el('th', {},
         ROLE_WORDS[role] || role),
       el('td', {}, ...people.flatMap((p, i) => [
         i ? el('span', {}, ', ') : null,
@@ -170,7 +170,7 @@ function participants(item) {
   }
 
   return el('div', { class: 'card' },
-    el('table', {}, el('tbody', {}, ...rows)),
+    el('table', { class: 'table--keyvalue' }, el('tbody', {}, ...rows)),
   );
 }
 
@@ -221,10 +221,11 @@ function eventDetails(item) {
 
   if (!rows.length) return null;
   return el('div', { class: 'card' },
-    el('table', {}, el('tbody', {}, ...rows.map(([label, value]) => el('tr', {},
-      el('th', { style: 'width:140px;background:transparent;position:static' }, label),
-      el('td', {}, String(value)),
-    )))),
+    el('table', { class: 'table--keyvalue' },
+      el('tbody', {}, ...rows.map(([label, value]) => el('tr', {},
+        el('th', {}, label),
+        el('td', {}, String(value)),
+      )))),
   );
 }
 
@@ -258,10 +259,11 @@ function contactCard(item) {
   if (!rows.length) return null;
   return el('div', { class: 'card' },
     el('h2', { class: 'card__title mt-0' }, 'Contact card'),
-    el('table', {}, el('tbody', {}, ...rows.map(([label, value]) => el('tr', {},
-      el('th', { style: 'width:180px;background:transparent;position:static' }, label),
-      el('td', {}, String(value)),
-    )))),
+    el('table', { class: 'table--keyvalue' },
+      el('tbody', {}, ...rows.map(([label, value]) => el('tr', {},
+        el('th', {}, label),
+        el('td', {}, String(value)),
+      )))),
   );
 }
 
@@ -273,17 +275,14 @@ function body(item) {
   const panel = el('div', { class: 'card' });
 
   if (item.body_text) {
-    panel.append(el('pre', {
-      style: 'white-space:pre-wrap;word-break:break-word;font-family:inherit;'
-        + 'font-size:var(--size-body);line-height:var(--line);margin:0',
-    }, item.body_text));
+    panel.append(el('pre', { class: 'prewrap mb-0' }, item.body_text));
   }
 
   if (item.body_html) {
     // The original HTML is offered as text, never rendered. Rendering mail
     // HTML would execute whatever is in it and fetch whatever it references,
     // and this program makes no network requests.
-    panel.append(el('details', { style: 'margin-top:16px' },
+    panel.append(el('details', { class: 'mt-4' },
       el('summary', {}, 'The original HTML of this message, as text'),
       el('p', { class: 'muted small' },
         'Shown as text rather than as a web page. Displaying it would make ' +
@@ -380,8 +379,8 @@ function threadPanel(item) {
   return el('div', { class: 'card' },
     el('h2', { class: 'card__title mt-0' },
       `This is part of a conversation of ${plural(item.thread.messages.length, 'message')}`),
-    el('ol', { style: 'padding-left:24px' },
-      ...item.thread.messages.map((m) => el('li', { style: 'margin-bottom:8px' },
+    el('ol', {},
+      ...item.thread.messages.map((m) => el('li', {},
         m.id === item.id
           ? el('span', { class: 'strong' }, `${m.subject || '(no subject)'} — this one`)
           : el('a', { href: `#/item/${m.id}` }, m.subject || '(no subject)'),

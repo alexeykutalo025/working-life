@@ -23,9 +23,9 @@
 
   /* -- surfaces ------------------------------------------------------- */
   --bg:            #ffffff;
-  --surface:       #f4f5f3;
-  --surface-2:     #eaebe8;
-  --border:        #c9ccc6;
+  --surface:       #f7f8f6;
+  --surface-2:     #eceee9;
+  --border:        #d5d8d2;
   --border-strong: #8d918a;
 
   /* -- text (all >= 7:1 on --bg and --surface) ------------------------ */
@@ -81,10 +81,19 @@
   --sp-5: 24px;
   --sp-6: 32px;
   --sp-7: 48px;
-  --radius: 8px;
+  --radius: 10px;
+  --radius-sm: 6px;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.14), 0 1px 2px rgba(0, 0, 0, 0.08);
+  --shadow-soft: 0 1px 2px rgba(16, 18, 21, 0.06);
+  --shadow-lift: 0 4px 14px rgba(16, 18, 21, 0.10);
 }
 
+/* The dark palette is written twice: once for a computer set to dark that has
+   never touched the toggle, and once for the toggle itself. Plain CSS has no
+   way to name a block and reuse it, so the two are kept in step by a test -
+   `--accent-hover` was once `--accent` here and `#a9caf3` below, which left
+   every hover state broken for exactly the people who never touch the toggle,
+   and nothing caught it. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     color-scheme: dark;
@@ -99,7 +108,7 @@
     --text-inverse:  #101215;
 
     --accent:        #8ab6ee;   /*  8.5:1 on --bg */
-    --accent-hover:  --accent;
+    --accent-hover:  #a9caf3;
     --accent-soft:   #1b2a3c;
     --focus:         #8ab6ee;
 
@@ -122,6 +131,8 @@
     --gap-ink:       #f79aa2;
 
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.35);
+    --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-lift: 0 4px 14px rgba(0, 0, 0, 0.45);
   }
 }
 
@@ -156,6 +167,8 @@
   --kind-note:     #c3c9d2;
   --gap-ink:       #f79aa2;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-lift: 0 4px 14px rgba(0, 0, 0, 0.45);
 }
 
 /* ==========================================================================
@@ -179,11 +192,17 @@ body {
   overflow-x: hidden;         /* the layout must never need sideways scrolling */
 }
 
-h1, h2, h3 { line-height: 1.3; margin: 0 0 var(--sp-3); font-weight: 650; }
-h1 { font-size: var(--size-h1); }
-h2 { font-size: var(--size-h2); margin-top: var(--sp-6); }
+h1, h2, h3 { line-height: 1.25; margin: 0 0 var(--sp-3); font-weight: 680; }
+h1 { font-size: var(--size-h1); letter-spacing: -0.015em; }
+h2 { font-size: var(--size-h2); margin-top: var(--sp-6); letter-spacing: -0.01em; }
 h3 { font-size: var(--size-h3); margin-top: var(--sp-5); }
 p  { margin: 0 0 var(--sp-4); max-width: 68ch; }
+
+/* There was no rule for a list anywhere, so every screen that needed one
+   indented it with an inline style. */
+ul, ol { margin: 0 0 var(--sp-4); padding-left: var(--sp-5); }
+li { margin-bottom: var(--sp-2); }
+li:last-child { margin-bottom: 0; }
 
 a {
   color: var(--accent);
@@ -221,16 +240,19 @@ code, kbd, .mono { font-family: var(--font-mono); font-size: var(--size-small); 
 .app { min-height: 100vh; display: flex; flex-direction: column; }
 
 .masthead {
-  background: var(--surface);
-  border-bottom: 2px solid var(--border);
+  background: var(--bg);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow-soft);
   padding: var(--sp-3) var(--sp-5);
   display: flex; align-items: center; gap: var(--sp-5);
   flex-wrap: wrap;
+  position: sticky; top: 0; z-index: 20;
 }
 
 .masthead__brand {
-  font-size: var(--size-h3); font-weight: 700;
+  font-size: var(--size-h3); font-weight: 750;
   color: var(--text); text-decoration: none; white-space: nowrap;
+  letter-spacing: -0.02em;
 }
 .masthead__brand:hover { color: var(--text); text-decoration: underline; }
 
@@ -252,12 +274,16 @@ code, kbd, .mono { font-family: var(--font-mono); font-size: var(--size-small); 
 }
 .nav__link:hover { background: var(--surface-2); color: var(--text); }
 .nav__link[aria-current="page"] {
-  background: var(--accent-soft);
+  background: var(--accent);
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--text-inverse);
+}
+.nav__link[aria-current="page"]:hover {
+  background: var(--accent-hover); border-color: var(--accent-hover);
+  color: var(--text-inverse);
 }
 
-.main { flex: 1 1 auto; padding: var(--sp-5); max-width: 1600px; width: 100%; }
+.main { flex: 1 1 auto; padding: var(--sp-6) var(--sp-5); max-width: 1600px; width: 100%; }
 
 .page__title { margin-bottom: var(--sp-2); }
 .page__lede { color: var(--text-muted); max-width: 70ch; margin-bottom: var(--sp-5); }
@@ -269,15 +295,16 @@ code, kbd, .mono { font-family: var(--font-mono); font-size: var(--size-small); 
 .health {
   display: flex; align-items: flex-start; gap: var(--sp-4);
   padding: var(--sp-4) var(--sp-5);
-  border-bottom: 2px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  border-left: 6px solid var(--border-strong);
   background: var(--surface);
   flex-wrap: wrap;
 }
-.health--clear   { background: var(--good-soft);     border-bottom-color: var(--good); }
-.health--info    { background: var(--info-soft);     border-bottom-color: var(--info); }
-.health--medium  { background: var(--medium-soft);   border-bottom-color: var(--border-strong); }
-.health--high    { background: var(--high-soft);     border-bottom-color: var(--high); }
-.health--critical{ background: var(--critical-soft); border-bottom-color: var(--critical); }
+.health--clear   { background: var(--good-soft);     border-left-color: var(--good); }
+.health--info    { background: var(--info-soft);     border-left-color: var(--info); }
+.health--medium  { background: var(--medium-soft);   border-left-color: var(--border-strong); }
+.health--high    { background: var(--high-soft);     border-left-color: var(--high); }
+.health--critical{ background: var(--critical-soft); border-left-color: var(--critical); }
 
 .health__label { font-weight: 700; white-space: nowrap; }
 .health__text  { flex: 1 1 320px; }
@@ -297,9 +324,14 @@ code, kbd, .mono { font-family: var(--font-mono); font-size: var(--size-small); 
   border: 2px solid var(--border-strong);
   background: var(--bg); color: var(--text);
   cursor: pointer; text-decoration: none; text-align: center;
+  box-shadow: var(--shadow-soft);
+  transition: background 0.12s, border-color 0.12s, transform 0.06s;
 }
 .btn:hover { background: var(--surface-2); color: var(--text); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn:active { transform: translateY(1px); }
+.btn:disabled {
+  opacity: 0.45; cursor: not-allowed; box-shadow: none; transform: none;
+}
 
 .btn--primary {
   background: var(--accent); border-color: var(--accent);
@@ -320,22 +352,39 @@ code, kbd, .mono { font-family: var(--font-mono); font-size: var(--size-small); 
    ========================================================================== */
 
 .card {
-  background: var(--surface);
+  background: var(--bg);
   border: 1px solid var(--border);
   border-radius: var(--radius);
+  box-shadow: var(--shadow-soft);
   padding: var(--sp-5);
   margin-bottom: var(--sp-5);
 }
-.card__title { margin-top: 0; }
+.card > *:last-child { margin-bottom: 0; }
+.card__title {
+  margin-top: 0; margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
 
 .grid { display: grid; gap: var(--sp-4); }
 .grid--3 { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
 .grid--4 { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 
-.stat { background: var(--surface); border: 1px solid var(--border);
-        border-radius: var(--radius); padding: var(--sp-4); }
-.stat__value { font-size: 34px; font-weight: 700; line-height: 1.15; }
+.stat {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: var(--sp-5) var(--sp-4);
+}
+.stat__value {
+  display: block;
+  font-size: 34px; font-weight: 700; line-height: 1.1;
+  font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+}
 .stat__label { color: var(--text-muted); }
+
+/* One big number in its own right, above a chart or a result list. Four
+   screens each set their own size inline for this; now there is one. */
+.stat__value--lead { font-size: 44px; }
+.stat__value--inline { display: inline; font-size: 26px; }
 .stat__qualifier {
   display: block; margin-top: var(--sp-2);
   color: var(--critical); font-weight: 600; font-size: var(--size-small);
@@ -354,12 +403,27 @@ code, kbd, .mono { font-family: var(--font-mono); font-size: var(--size-small); 
   color: var(--critical); font-weight: 600; font-size: var(--size-small);
 }
 .qualified-note::before { content: "\26A0"; font-size: 1.05em; }
+.qualified-note__link { font-size: var(--size-small); }
+
+/* A search result's subject line, and the last three sizes that were inline. */
+.result__subject { font-size: 19px; }
+.baseline { align-items: baseline; }
+.col-check { width: 44px; }
+.prewrap {
+  white-space: pre-wrap; word-break: break-word;
+  font-family: inherit; font-size: var(--size-body);
+  line-height: var(--line); margin: 0;
+}
 
 /* ==========================================================================
    Tables
    ========================================================================== */
 
-.table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius); }
+.table-wrap {
+  overflow-x: auto; border: 1px solid var(--border);
+  border-radius: var(--radius); box-shadow: var(--shadow-soft);
+  background: var(--bg);
+}
 
 table { border-collapse: collapse; width: 100%; background: var(--bg); }
 
@@ -368,10 +432,26 @@ th, td {
   border-bottom: 1px solid var(--border);
   vertical-align: top;
 }
+/* The header row stays visible while a long list scrolls - which is the whole
+   point of it on a 500-file table. It has to sit below the masthead, which is
+   also sticky and would otherwise hide it; main.js measures the masthead and
+   keeps --masthead-h in step, and the fallback here is a sensible guess for
+   the moment before it does. */
 th {
   background: var(--surface-2);
-  font-weight: 650;
-  position: sticky; top: 0; z-index: 1;
+  font-weight: 680;
+  position: sticky; top: var(--masthead-h, 68px); z-index: 1;
+  border-bottom: 2px solid var(--border-strong);
+  white-space: nowrap;
+}
+
+/* A two-column list of labels and values is not a data table: it wants no
+   sticky shaded header running down its left edge. Four screens turned that
+   off with an inline style each; this is the rule they were all writing. */
+.table--keyvalue th {
+  background: transparent; position: static;
+  border-bottom: 1px solid var(--border);
+  width: 200px; white-space: normal;
 }
 th button {
   background: none; border: 0; padding: var(--sp-2) 0; margin: 0;
@@ -380,8 +460,9 @@ th button {
 }
 th button:hover { text-decoration: underline; }
 
+tbody tr:last-child td { border-bottom: 0; }
 tbody tr:hover { background: var(--surface); }
-tbody tr.is-selected { background: var(--accent-soft); }
+tbody tr.is-selected { background: var(--accent-soft); box-shadow: inset 4px 0 0 var(--accent); }
 
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
@@ -429,6 +510,10 @@ input[type="date"], select, textarea {
   background: var(--bg); color: var(--text);
   width: 100%; max-width: 100%;
 }
+input:hover, select:hover, textarea:hover { border-color: var(--accent); }
+
+/* The one enormous box on the Search screen. It was sized inline. */
+.input--lead { font-size: 22px; min-height: 56px; }
 textarea { min-height: 96px; line-height: var(--line); resize: vertical; }
 
 input[type="checkbox"], input[type="radio"] {
@@ -439,8 +524,10 @@ input[type="checkbox"], input[type="radio"] {
 /* A checkbox plus its label share one 44px target. */
 .check {
   display: flex; align-items: flex-start; gap: var(--sp-3);
-  min-height: var(--tap); padding: var(--sp-2) 0; cursor: pointer;
+  min-height: var(--tap); padding: var(--sp-2) var(--sp-2); cursor: pointer;
+  border-radius: var(--radius-sm);
 }
+.check:hover { background: var(--surface-2); }
 .check input { margin-top: 3px; flex: none; }
 .check span { font-weight: 500; }
 .check__note { display: block; color: var(--text-muted); font-size: var(--size-small); }
@@ -449,8 +536,11 @@ input[type="checkbox"], input[type="radio"] {
 .field__help { color: var(--text-muted); font-size: var(--size-small); margin-top: var(--sp-1); }
 
 .toolbar {
-  display: flex; gap: var(--sp-3); flex-wrap: wrap; align-items: flex-end;
-  margin-bottom: var(--sp-4);
+  display: flex; gap: var(--sp-4); flex-wrap: wrap; align-items: flex-end;
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-4);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 .toolbar .field { margin-bottom: 0; min-width: 180px; }
 
@@ -490,11 +580,13 @@ input[type="checkbox"], input[type="radio"] {
 
 .notice {
   padding: var(--sp-4) var(--sp-5);
+  border: 1px solid var(--border);
   border-left: 6px solid var(--border-strong);
   border-radius: var(--radius);
   background: var(--surface);
   margin-bottom: var(--sp-4);
 }
+.notice > *:last-child { margin-bottom: 0; }
 .notice--error   { border-left-color: var(--critical); background: var(--critical-soft); }
 .notice--warning { border-left-color: var(--high);     background: var(--high-soft); }
 .notice--good    { border-left-color: var(--good);     background: var(--good-soft); }
@@ -505,7 +597,10 @@ input[type="checkbox"], input[type="radio"] {
 .empty {
   text-align: center; padding: var(--sp-7) var(--sp-5);
   color: var(--text-muted);
+  background: var(--surface); border: 1px dashed var(--border-strong);
+  border-radius: var(--radius); margin-bottom: var(--sp-5);
 }
+.empty p { margin-left: auto; margin-right: auto; }
 .empty__title { font-size: var(--size-h3); font-weight: 650; color: var(--text); margin-bottom: var(--sp-2); }
 
 /* ==========================================================================
@@ -627,6 +722,24 @@ mark {
 .mb-5 { margin-bottom: var(--sp-5); }
 .stack > * + * { margin-top: var(--sp-4); }
 .row { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; }
+.row--tight { gap: var(--sp-2); }
+.row--wide  { gap: var(--sp-5); }
+.row--between { justify-content: space-between; }
+.row--top { align-items: flex-start; }
+
+/* A chart wider than its column scrolls sideways inside its own box, never
+   pushing the page sideways. Three screens wrote this inline. */
+.svg-scroll { overflow-x: auto; }
+
+/* The Search screen's sidebar and results. It was an inline grid, and the one
+   place the "no sideways scrolling at 1280px" promise was at risk. */
+.with-sidebar {
+  display: grid; gap: var(--sp-5); align-items: start;
+  grid-template-columns: minmax(240px, 280px) minmax(0, 1fr);
+}
+@media (max-width: 1100px) {
+  .with-sidebar { grid-template-columns: minmax(0, 1fr); }
+}
 
 /* Periods of the user's own life, shaded behind the timeline bars. */
 .era-list { list-style: none; margin: var(--sp-4) 0; padding: 0; }

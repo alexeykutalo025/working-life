@@ -5,10 +5,11 @@
 // shows live progress, cancels, and downloads cloud-only files only after
 // showing what that would cost.
 
-import { api, ApiError } from '../api.js';
+import { api } from '../api.js';
 import {
-  bytes, clear, date, el, empty, errorNotice, loading, modal, mount,
-  notice, num, plural, progressBar, setTitle, severityTag, tag,
+  bytes, clear, date, debounce, el, empty, errorDialog, errorNotice, field,
+  loading, modal, mount, notice, num, plural, progressBar, setTitle,
+  severityTag, stat, tag,
 } from '../ui.js';
 
 const state = {
@@ -62,7 +63,7 @@ async function refreshSummary() {
         c.pending ? `${num(c.pending)} still to read` : 'all of them'),
       stat('Need attention', num(attention),
         attention ? 'cloud-only, locked or could not be read' : 'nothing is blocked',
-        attention > 0),
+        { alarming: attention > 0 }),
     );
 
     host.append(
@@ -96,17 +97,6 @@ async function refreshSummary() {
     clear(host);
     host.append(errorNotice(err));
   }
-}
-
-// `alarming` decides whether the note is a warning or just a note. The loud
-// style is reserved for numbers that actually need attention; using it for
-// "all of them" would teach the user to ignore the colour that matters.
-function stat(label, value, note, alarming = false) {
-  return el('div', { class: 'stat' },
-    el('div', { class: alarming ? 'stat__value qualified' : 'stat__value' }, value),
-    el('div', { class: 'stat__label' }, label),
-    note ? el('span', { class: alarming ? 'stat__qualifier' : 'check__note' }, note) : null,
-  );
 }
 
 const TYPE_NAMES = {
@@ -148,7 +138,7 @@ function renderControls() {
     el('div', { class: 'toolbar' },
       field('Search the list', el('input', {
         type: 'search', id: 'filter-search', placeholder: 'part of a file name or folder',
-        oninput: debounced(() => {
+        oninput: debounce(() => {
           state.filters.search = document.getElementById('filter-search').value.trim();
           refreshTable();
         }),
@@ -190,20 +180,6 @@ function renderControls() {
   );
 }
 
-function field(label, control) {
-  const id = control.id || `f${Math.random().toString(36).slice(2)}`;
-  control.id = id;
-  return el('div', { class: 'field' },
-    el('label', { for: id }, label),
-    control,
-  );
-}
-
-let debounceHandle;
-function debounced(fn, ms = 300) {
-  return () => { clearTimeout(debounceHandle); debounceHandle = setTimeout(fn, ms); };
-}
-
 // --- the drive chooser ----------------------------------------------------
 
 async function openDriveChooser() {
@@ -211,7 +187,7 @@ async function openDriveChooser() {
   try {
     targets = await api.scanTargets();
   } catch (err) {
-    mountModalError(err);
+    errorDialog(err);
     return;
   }
 
@@ -312,7 +288,7 @@ async function openDriveChooser() {
             await api.startScan(roots, fullHash.checked);
             pollJob();
           } catch (err) {
-            mountModalError(err);
+            errorDialog(err);
           }
         },
       }, 'Start looking'),
@@ -423,16 +399,6 @@ function openFolderPicker(onChoose) {
   go('');
 }
 
-function mountModalError(err) {
-  const dialog = modal({
-    title: 'That did not work',
-    body: el('div', {},
-      el('p', {}, err instanceof ApiError ? err.message : String(err)),
-    ),
-    actions: [el('button', { class: 'btn btn--primary', type: 'button', onclick: () => dialog.close() }, 'Close')],
-  });
-}
-
 // --- reading files into the archive ---------------------------------------
 
 async function openReadDialog(ids) {
@@ -440,12 +406,12 @@ async function openReadDialog(ids) {
   try {
     plan = await api.extractPlan(ids);
   } catch (err) {
-    mountModalError(err);
+    errorDialog(err);
     return;
   }
 
   if (!plan.to_read && !plan.already_read) {
-    mountModalError(new Error(
+    errorDialog(new Error(
       'There is nothing to read. Search for Outlook files first.'));
     return;
   }
@@ -530,7 +496,7 @@ async function openReadDialog(ids) {
             });
             pollJob();
           } catch (err) {
-            mountModalError(err);
+            errorDialog(err);
           }
         },
       }, sample.checked ? 'Read a sample' : 'Start reading'),
@@ -564,7 +530,7 @@ async function pollJob() {
         el('button', {
           class: 'btn btn--danger', type: 'button',
           onclick: async () => {
-            try { await api.cancelJob(); } catch (err) { mountModalError(err); }
+            try { await api.cancelJob(); } catch (err) { errorDialog(err); }
           },
         }, 'Stop, and keep what has been done so far'),
       ),
@@ -722,7 +688,7 @@ async function refreshTable() {
       el('table', {},
         el('thead', {},
           el('tr', {},
-            el('th', { style: 'width:44px' }, selectAll),
+            el('th', { class: 'col-check' }, selectAll),
             header('name', 'File'),
             header('type', 'Type'),
             header('size', 'Size', 'num'),
@@ -830,7 +796,7 @@ async function confirmHydrate(ids) {
   try {
     plan = await api.hydratePlan(ids);
   } catch (err) {
-    mountModalError(err);
+    errorDialog(err);
     return;
   }
 
@@ -872,7 +838,7 @@ async function confirmHydrate(ids) {
           try {
             await api.hydrate(ids);
             pollJob();
-          } catch (err) { mountModalError(err); }
+          } catch (err) { errorDialog(err); }
         },
       }, `Yes, download ${bytes(plan.total_bytes)}`),
       el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() },

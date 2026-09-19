@@ -7,19 +7,34 @@ import { clear, el, errorNotice, loading, mount, setTitle } from './ui.js';
 
 const THEME_KEY = 'recall.theme';
 
+// Three settings, not two. The button used to flip between light and dark,
+// which meant that once it was pressed there was no way back to following
+// whatever the computer itself is set to - and no way to tell that was what
+// had happened.
+const THEMES = [
+  { id: 'system', label: 'Screen: match my computer' },
+  { id: 'light', label: 'Screen: light' },
+  { id: 'dark', label: 'Screen: dark' },
+];
+
 function applyTheme(theme) {
   document.documentElement.dataset.theme = theme === 'system' ? '' : theme;
   const label = document.getElementById('theme-toggle-label');
   if (label) {
-    const dark = theme === 'dark'
-      || (theme !== 'light' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    label.textContent = dark ? 'Light screen' : 'Dark screen';
+    const current = THEMES.find((t) => t.id === theme) || THEMES[0];
+    label.textContent = current.label;
+  }
+  const button = document.getElementById('theme-toggle');
+  if (button) {
+    const next = THEMES[(THEMES.findIndex((t) => t.id === theme) + 1) % THEMES.length];
+    button.title = `Press to switch to: ${next.label.replace('Screen: ', '')}`;
   }
 }
 
 function currentTheme() {
   try {
-    return localStorage.getItem(THEME_KEY) || 'system';
+    const stored = localStorage.getItem(THEME_KEY);
+    return THEMES.some((t) => t.id === stored) ? stored : 'system';
   } catch {
     return 'system';
   }
@@ -30,10 +45,8 @@ function initTheme() {
   const button = document.getElementById('theme-toggle');
   if (!button) return;
   button.addEventListener('click', () => {
-    const dark = document.documentElement.dataset.theme === 'dark'
-      || (document.documentElement.dataset.theme === ''
-          && window.matchMedia('(prefers-color-scheme: dark)').matches);
-    const next = dark ? 'light' : 'dark';
+    const at = THEMES.findIndex((t) => t.id === currentTheme());
+    const next = THEMES[(at + 1) % THEMES.length].id;
     try { localStorage.setItem(THEME_KEY, next); } catch { /* private window */ }
     applyTheme(next);
   });
@@ -191,10 +204,35 @@ async function route() {
   refreshHealth();
 }
 
+// --- keeping the sticky bits out of each other's way -----------------------
+//
+// The masthead and a table's header row are both sticky. Without this the
+// header row scrolls up underneath the masthead and the user loses the column
+// names exactly when they need them. The masthead wraps to two lines on a
+// narrow window, so its height is measured rather than guessed.
+
+function trackMastheadHeight() {
+  const masthead = document.querySelector('.masthead');
+  if (!masthead) return;
+
+  const update = () => {
+    const h = Math.round(masthead.getBoundingClientRect().height);
+    document.documentElement.style.setProperty('--masthead-h', `${h}px`);
+  };
+
+  update();
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(update).observe(masthead);
+  } else {
+    window.addEventListener('resize', update);
+  }
+}
+
 // --- start ----------------------------------------------------------------
 
 initTheme();
 buildNav();
+trackMastheadHeight();
 window.addEventListener('hashchange', route);
 window.addEventListener('DOMContentLoaded', route);
 if (document.readyState !== 'loading') route();

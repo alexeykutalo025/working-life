@@ -283,3 +283,52 @@ def test_every_screen_in_the_navigation_exists():
         assert (WEB / "static/js/screens" / f"{module}.js").exists(), (
             f"a route imports screens/{module}.js, which does not exist"
         )
+
+
+# ---------------------------------------------------------------------------
+# The two dark palettes
+# ---------------------------------------------------------------------------
+
+
+def theme_block(css: str, opener: str) -> dict:
+    """The custom properties declared inside one block."""
+    body = css.split(opener, 1)[1].split("}", 1)[0]
+    return {
+        m.group(1): m.group(2).strip()
+        for m in re.finditer(r"(--[a-z0-9-]+):\s*([^;]+);", body)
+    }
+
+
+def test_the_two_dark_palettes_agree():
+    """Dark is written twice: for the system setting, and for the toggle.
+
+    Plain CSS has no way to name a block and reuse it, so the two can drift -
+    and did. `--accent-hover` was `--accent` in one and `#a9caf3` in the other,
+    which is not even a colour: it left every hover state broken for exactly
+    the people who never touch the toggle, and nothing noticed.
+    """
+    css = CSS.read_text(encoding="utf-8")
+
+    system = theme_block(css, ':root:not([data-theme="light"]) {')
+    toggled = theme_block(css, ':root[data-theme="dark"] {')
+
+    assert system, "the system-dark block has gone"
+    assert toggled, "the explicit-dark block has gone"
+    assert system == toggled, (
+        "the two dark palettes disagree: "
+        f"{ {k: (system.get(k), toggled.get(k)) for k in set(system) | set(toggled) if system.get(k) != toggled.get(k)} }"
+    )
+
+
+def test_every_colour_is_a_colour():
+    """A var() that forgot its var() is not a colour, and fails silently."""
+    css = CSS.read_text(encoding="utf-8")
+    for opener in (":root {", ':root[data-theme="dark"] {',
+                   ':root:not([data-theme="light"]) {'):
+        for name, value in theme_block(css, opener).items():
+            if name.startswith(("--font", "--size", "--sp-", "--line", "--tap",
+                                "--radius", "--shadow")):
+                continue
+            assert not value.startswith("--"), (
+                f"{name} in {opener} is {value!r} - it needs var({value})"
+            )

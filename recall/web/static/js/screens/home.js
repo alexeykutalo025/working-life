@@ -6,16 +6,9 @@
 
 import { api } from '../api.js';
 import {
-  bytes, date, el, errorNotice, honest, mount, notice, num, plural, setTitle,
+  bytes, date, el, errorNotice, honest, kindLabel, mount, notice, num, plural,
+  setTitle,
 } from '../ui.js';
-
-const KIND_WORDS = {
-  message: 'Messages',
-  event: 'Calendar entries',
-  contact: 'Contacts',
-  task: 'Tasks',
-  note: 'Notes',
-};
 
 export async function render() {
   setTitle('Home');
@@ -58,13 +51,13 @@ function headline(data) {
   const span = data.span;
 
   return el('div', { class: 'card' },
-    el('div', { class: 'row', style: 'gap:18px;align-items:baseline' },
-      el('span', { style: 'font-size:44px;font-weight:700;line-height:1' },
+    el('div', { class: 'row baseline' },
+      el('span', { class: 'stat__value stat__value--lead' },
         num(data.total.value)),
-      el('span', { style: 'font-size:20px' }, 'records in the archive'),
+      el('span', { class: 'stat__label' }, 'records in the archive'),
     ),
     data.total.qualified
-      ? el('p', { class: 'qualified-note', style: 'margin-top:10px' },
+      ? el('p', { class: 'qualified-note mt-3' },
           data.total.estimated_missing
             ? `About ${num(data.total.estimated_missing)} more records exist that ` +
               'Recall could not read. The number above is exactly what it could.'
@@ -96,7 +89,7 @@ function kindCards(data) {
   return el('div', { class: 'grid grid--4 mb-5' },
     ...data.by_kind.map((k) => el('div', { class: 'stat' },
       el('div', { class: 'stat__value' }, honest(k, { compact: true })),
-      el('div', { class: 'stat__label' }, KIND_WORDS[k.kind] || k.kind),
+      el('div', { class: 'stat__label' }, kindLabel(k.kind)),
     )),
   );
 }
@@ -154,7 +147,7 @@ function nextSteps(data) {
           class: step.primary ? 'btn btn--primary btn--block' : 'btn btn--block',
           href: step.href,
         }, step.label),
-        el('p', { class: 'muted small', style: 'margin-top:12px;margin-bottom:0' },
+        el('p', { class: 'muted small mt-3 mb-0' },
           step.why),
       )),
     ),
@@ -193,20 +186,26 @@ function detailPanel(data) {
     !data.index.complete
       ? notice('warning', 'The search index is not complete',
           el('p', {}, data.index.note),
-          el('p', { class: 'mb-0' },
-            'Until it is, searching will not find those records. In the black ' +
-            'window, run:  recall index'))
+          el('p', {},
+            'Until it is, searching will not find those records.'),
+          // There is a button for this. Telling somebody to type a command in
+          // a black window is not an instruction a non-programmer can follow.
+          el('div', { class: 'btn-row' },
+            el('button', {
+              class: 'btn btn--primary', type: 'button',
+              onclick: (e) => buildIndex(e.target),
+            }, 'Finish the search index now')))
       : null,
     el('div', { class: 'card' },
       el('div', { class: 'table-wrap' },
-        el('table', {},
+        el('table', { class: 'table--keyvalue' },
           el('tbody', {}, ...rows.map(([label, value]) => el('tr', {},
-            el('th', { style: 'background:transparent;position:static;width:60%' }, label),
+            el('th', {}, label),
             el('td', { class: 'num' }, value),
           ))),
         ),
       ),
-      el('p', { class: 'muted small mb-0', style: 'margin-top:12px' },
+      el('p', { class: 'muted small mb-0 mt-3' },
         'Everything Recall builds lives in:'),
       el('pre', { class: 'raw' }, data.storage.workdir),
       el('p', { class: 'muted small mb-0' },
@@ -231,7 +230,7 @@ function gettingStarted() {
     ),
     el('div', { class: 'card' },
       el('h2', { class: 'card__title mt-0' }, 'What Recall is going to do'),
-      el('ol', { style: 'max-width:68ch;padding-left:24px' },
+      el('ol', {},
         step('Find your files.',
           'Recall searches the drives you tick for anything Outlook made — ' +
           '.pst, .ost, .msg and a dozen older formats. It reads only names, ' +
@@ -256,4 +255,22 @@ function gettingStarted() {
 
 function step(title, body) {
   return el('li', {}, el('p', {}, el('strong', {}, title + ' '), body));
+}
+
+
+/** Build the rest of the search index, and say what happened either way. */
+async function buildIndex(button) {
+  const previous = button.textContent;
+  button.disabled = true;
+  button.textContent = 'Working…';
+  try {
+    await api.buildIndex();
+    button.replaceWith(el('span', { class: 'strong' },
+      'Done. Everything is searchable now.'));
+    await render();
+  } catch (err) {
+    button.disabled = false;
+    button.textContent = previous;
+    button.after(errorNotice(err));
+  }
 }

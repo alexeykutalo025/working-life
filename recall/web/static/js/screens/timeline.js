@@ -13,18 +13,11 @@
 
 import { api } from '../api.js';
 import {
-  clear, el, empty, errorNotice, loading, modal, mount, num, plural, setTitle,
+  clear, el, empty, errorNotice, kindLabel, loading, modal, monthName, mount,
+  num, plural, setTitle,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
-
-const KIND_LABELS = {
-  message: 'Messages',
-  event: 'Calendar entries',
-  contact: 'Contacts',
-  task: 'Tasks',
-  note: 'Notes',
-};
 
 const state = { level: 'year', year: null, month: null };
 
@@ -185,7 +178,7 @@ function chart(data) {
   svg.append(line(pad.left, pad.top, pad.left, pad.top + plotH,
     'var(--border-strong)', 2));
 
-  const wrap = el('div', { style: 'overflow-x:auto' });
+  const wrap = el('div', { class: 'svg-scroll' });
   wrap.append(svg);
   return el('div', {}, wrap, chartTable(data));
 }
@@ -392,7 +385,7 @@ function chartTable(data) {
         el('thead', {}, el('tr', {},
           el('th', {}, 'Period'),
           el('th', { class: 'num' }, 'Total'),
-          ...data.kinds.map((k) => el('th', { class: 'num' }, KIND_LABELS[k] || k)),
+          ...data.kinds.map((k) => el('th', { class: 'num' }, kindLabel(k))),
           el('th', {}, 'Came from'),
         )),
         el('tbody', {}, ...rows),
@@ -404,17 +397,17 @@ function chartTable(data) {
 function legend(data) {
   const items = data.kinds
     .filter((k) => data.buckets.some((b) => b.by_kind[k]))
-    .map((kind) => el('span', { class: 'row', style: 'gap:8px' },
+    .map((kind) => el('span', { class: 'row row--tight' },
       swatch(`var(--kind-${kind})`),
-      el('span', {}, KIND_LABELS[kind] || kind),
+      el('span', {}, kindLabel(kind)),
     ));
 
-  items.push(el('span', { class: 'row', style: 'gap:8px' },
+  items.push(el('span', { class: 'row row--tight' },
     swatch('url(#gap-hatch)', true),
     el('span', {}, 'No data — nothing was found for this period'),
   ));
 
-  return el('div', { class: 'row mb-5', style: 'gap:24px' }, ...items);
+  return el('div', { class: 'row row--wide mb-5' }, ...items);
 }
 
 function swatch(fill, hatched = false) {
@@ -445,7 +438,7 @@ function undatedPanel(undated) {
       'for any of them. They are kept exactly as found.'),
     el('p', { class: 'mb-0' },
       Object.entries(undated.by_kind)
-        .map(([k, n]) => `${num(n)} ${(KIND_LABELS[k] || k).toLowerCase()}`)
+        .map(([k, n]) => `${num(n)} ${(kindLabel(k)).toLowerCase()}`)
         .join(', ')),
   );
 }
@@ -725,7 +718,7 @@ function describeBucket(b) {
   }
   const parts = Object.entries(b.by_kind)
     .filter(([, n]) => n)
-    .map(([k, n]) => `${num(n)} ${(KIND_LABELS[k] || k).toLowerCase()}`);
+    .map(([k, n]) => `${num(n)} ${(kindLabel(k)).toLowerCase()}`);
   let text = `${b.label}: ${num(b.total)} records (${parts.join(', ')})`;
   if (b.source_count) text += `, from ${plural(b.source_count, 'file')}`;
   if (b.gap_class === 'source_contradiction') {
@@ -744,11 +737,6 @@ function describeChart(data) {
     `${withData} periods have data; ${without} have none and are shown hatched. ` +
     'The same figures are in the table below.'
   );
-}
-
-function monthName(m) {
-  return ['January', 'February', 'March', 'April', 'May', 'June', 'July',
-    'August', 'September', 'October', 'November', 'December'][(m || 1) - 1];
 }
 
 // --- svg helpers ----------------------------------------------------------

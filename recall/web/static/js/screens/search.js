@@ -6,8 +6,8 @@
 
 import { api } from '../api.js';
 import {
-  clear, date, debounce, el, empty, errorNotice, loading, mount, num, plural,
-  setTitle, tag,
+  clear, date, debounce, el, empty, errorNotice, kindLabel, loading, mount,
+  num, plural, setTitle, tag,
 } from '../ui.js';
 
 const state = {
@@ -59,7 +59,7 @@ export async function render({ params }) {
         id: 'search-box',
         value: state.q,
         placeholder: 'a name, a word, a company — anything you remember',
-        style: 'font-size:22px;min-height:56px',
+        class: 'input--lead',
         oninput: debounce((e) => {
           state.q = e.target.value;
           state.offset = 0;
@@ -75,7 +75,7 @@ export async function render({ params }) {
         'Press the / key at any time to come back to this box.'),
       el('div', { id: 'search-understood' }),
     ),
-    el('div', { style: 'display:grid;grid-template-columns:280px 1fr;gap:24px;align-items:start' },
+    el('div', { class: 'with-sidebar' },
       el('aside', { id: 'search-filters' }, loading('Loading filters')),
       el('div', { id: 'search-results' }),
     ),
@@ -171,7 +171,7 @@ async function loadFilters() {
       placeholder: '2003, or 2003-04',
       oninput: debounce((e) => { state.date_from = e.target.value.trim(); state.offset = 0; runSearch(); }, 400),
     }),
-    el('label', { for: 'filter-to', style: 'margin-top:8px' }, 'Up to this date'),
+    el('label', { for: 'filter-to', class: 'mt-3' }, 'Up to this date'),
     el('input', {
       type: 'text', id: 'filter-to', value: state.date_to,
       placeholder: '2009, or 2009-12',
@@ -274,13 +274,6 @@ function select(label, key, options) {
   );
 }
 
-function kindLabel(kind) {
-  return ({
-    message: 'Messages', event: 'Calendar entries', contact: 'Contacts',
-    task: 'Tasks', note: 'Notes',
-  })[kind] || kind;
-}
-
 function fileName(path) {
   return String(path).split(/[\\/]/).pop();
 }
@@ -331,7 +324,7 @@ async function runSearch() {
   // The honest-count rule: a total that something affects is never bare.
   const total = data.total;
   const header = el('div', { class: 'row mb-3' },
-    el('span', { class: 'stat__value', style: 'font-size:26px' }, num(total.value)),
+    el('span', { class: 'stat__value stat__value--inline' }, num(total.value)),
     el('span', { class: 'stat__label' },
       total.value === 1 ? 'record found' : 'records found'),
   );
@@ -654,19 +647,18 @@ function resultCard(result, index) {
   const card = el('article', {
     class: 'card search-result',
     tabindex: '0',
-    style: 'cursor:pointer;margin-bottom:12px',
     onclick: () => { window.location.hash = `#/item/${result.id}`; },
     onkeydown: (e) => {
       if (e.key === 'Enter') window.location.hash = `#/item/${result.id}`;
     },
     onfocus: () => { state.selected = index; },
   },
-    el('div', { class: 'row', style: 'gap:10px' },
-      tag(kindLabel(result.kind).replace(/s$/, ''), 'plain'),
-      el('span', { class: 'strong', style: 'font-size:19px' },
+    el('div', { class: 'row row--tight' },
+      tag(kindLabel(result.kind, { one: true }), 'plain'),
+      el('span', { class: 'strong result__subject' },
         result.subject || '(no subject)'),
     ),
-    el('div', { class: 'row muted small', style: 'gap:12px' },
+    el('div', { class: 'row muted small' },
       el('span', {}, result.occurred_utc ? date(result.occurred_utc, { withTime: true }) : 'no date'),
       !result.timezone_known && result.occurred_utc
         ? el('span', { class: 'qualified-note' }, 'timezone not recorded')
