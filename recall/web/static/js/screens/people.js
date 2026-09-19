@@ -12,12 +12,21 @@
 import { api } from '../api.js';
 import {
   clear, date, dateRange, debounce, el, empty, errorDialog, errorNotice,
-  loading, modal, mount, notice, num, plural, setTitle, stat, tag,
+  loading, modal, mount, notice, num, pager, plural, setTitle, stat, tag,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
-const state = { sort: 'items', order: 'desc', search: '', includeSelf: true };
+const state = {
+  sort: 'items', order: 'desc', search: '', includeSelf: true,
+  offset: 0, pageSize: 50,
+};
+
+/** Anything that changes which people match starts again at the first page. */
+function reload() {
+  state.offset = 0;
+  loadList();
+}
 
 export async function render({ segments }) {
   if (segments.length && /^\d+$/.test(segments[0])) {
@@ -45,7 +54,7 @@ async function renderList() {
           placeholder: 'a name or an email address',
           oninput: debounce(() => {
             state.search = document.getElementById('people-search').value.trim();
-            loadList();
+            reload();
           }),
         })),
       el('div', { class: 'field' },
@@ -54,7 +63,7 @@ async function renderList() {
           id: 'people-sort',
           onchange: () => {
             state.sort = document.getElementById('people-sort').value;
-            loadList();
+            reload();
           },
         },
           el('option', { value: 'items' }, 'How much they appear'),
@@ -66,7 +75,7 @@ async function renderList() {
       el('label', { class: 'check' },
         el('input', {
           type: 'checkbox', checked: true,
-          onchange: (e) => { state.includeSelf = e.target.checked; loadList(); },
+          onchange: (e) => { state.includeSelf = e.target.checked; reload(); },
         }),
         el('span', {}, 'Include your own addresses'),
       ),
@@ -89,6 +98,8 @@ async function loadList() {
       order: state.order,
       search: state.search,
       include_self: state.includeSelf,
+      limit: state.pageSize,
+      offset: state.offset,
     });
   } catch (err) {
     clear(host);
@@ -109,10 +120,6 @@ async function loadList() {
   }
 
   host.append(
-    el('p', { class: 'muted' },
-      data.total > data.rows.length
-        ? `Showing the first ${num(data.rows.length)} of ${num(data.total)} people.`
-        : `${plural(data.total, 'person', 'people')}.`),
     el('div', { class: 'table-wrap' },
       el('table', {},
         el('thead', {}, el('tr', {},
@@ -126,6 +133,25 @@ async function loadList() {
         el('tbody', {}, ...data.rows.map(personRow)),
       ),
     ),
+    pager({
+      total: data.total,
+      offset: state.offset,
+      pageSize: state.pageSize,
+      unit: 'person',
+      units: 'people',
+      onGo: (offset) => {
+        state.offset = offset;
+        loadList();
+        // Back to the top of the list, or a new page starts halfway down it.
+        const top = document.getElementById('people-list');
+        if (top) top.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      },
+      onPageSize: (size) => {
+        state.pageSize = size;
+        state.offset = 0;
+        loadList();
+      },
+    }),
   );
 }
 

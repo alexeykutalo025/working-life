@@ -53,6 +53,11 @@ def list_people(
     """Everyone in the archive, with a warning on anyone who is really a group."""
     conn = _conn(request)
 
+    # A page is a page. Without a ceiling, one request can be asked for the
+    # whole table and the screen then has to draw it.
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+
     columns = {
         "items": "p.item_count",
         "name": "p.display_name",

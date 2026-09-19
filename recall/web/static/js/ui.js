@@ -432,3 +432,125 @@ export function errorDialog(err) {
   });
   return dialog;
 }
+
+
+// --- paging ---------------------------------------------------------------
+//
+// One pager for every long list. Numbered pages as well as Previous and Next,
+// because "page 7 of 13" tells somebody where they are in a way that two
+// arrows never do, and because jumping back to the start of a 300-name list
+// should not mean pressing Previous twelve times.
+
+/** How many rows a page holds. The middle one is the default everywhere. */
+export const PAGE_SIZES = [25, 50, 100];
+
+/**
+ * Previous / Next, numbered pages, and a count.
+ *
+ * `onGo(offset)` is called with the new offset; `onPageSize(size)` is
+ * optional and adds the "per page" chooser.
+ */
+export function pager({ total, offset, pageSize, onGo, onPageSize,
+                        unit = 'result', units = null }) {
+  if (!total) return null;
+
+  const pages = Math.max(1, Math.ceil(total / pageSize));
+  const current = Math.floor(offset / pageSize) + 1;
+  const from = total ? offset + 1 : 0;
+  const to = Math.min(total, offset + pageSize);
+
+  const goToPage = (page) => onGo((Math.min(Math.max(1, page), pages) - 1) * pageSize);
+
+  const nav = el('nav', { class: 'pager', 'aria-label': 'Pages' });
+
+  // "persons" is not a word anybody says, so the plural can be given outright.
+  const word = total === 1 ? unit : (units || `${unit}s`);
+  nav.append(el('p', { class: 'pager__count mb-0' },
+    `Showing ${num(from)} to ${num(to)} of ${num(total)} ${word}`));
+
+  if (pages > 1) {
+    const buttons = el('div', { class: 'pager__pages' });
+
+    buttons.append(el('button', {
+      class: 'btn', type: 'button', disabled: current === 1,
+      onclick: () => goToPage(current - 1),
+    }, '← Previous'));
+
+    for (const page of pageNumbers(current, pages)) {
+      if (page === null) {
+        buttons.append(el('span', { class: 'pager__gap', 'aria-hidden': 'true' }, '…'));
+        continue;
+      }
+      buttons.append(el('button', {
+        class: `btn pager__page${page === current ? ' btn--primary' : ''}`,
+        type: 'button',
+        'aria-label': `Page ${page} of ${pages}`,
+        'aria-current': page === current ? 'page' : null,
+        onclick: () => goToPage(page),
+      }, String(page)));
+    }
+
+    buttons.append(el('button', {
+      class: 'btn', type: 'button', disabled: current === pages,
+      onclick: () => goToPage(current + 1),
+    }, 'Next →'));
+
+    nav.append(buttons);
+  }
+
+  if (onPageSize) {
+    const select = el('select', {
+      id: 'pager-size',
+      onchange: (e) => onPageSize(Number(e.target.value)),
+    });
+    for (const size of PAGE_SIZES) {
+      select.append(el('option', {
+        value: String(size), selected: size === pageSize,
+      }, `${size} at a time`));
+    }
+    const wrap = el('div', { class: 'pager__size' },
+      el('label', { for: 'pager-size' }, 'Show'),
+      select);
+    nav.append(wrap);
+  }
+
+  return nav;
+}
+
+/**
+ * Which page numbers to show: the two ends, and a run around where you are.
+ *
+ * `null` marks a gap. Nine pages fit; three hundred do not, and a row of three
+ * hundred buttons is no more use than none.
+ *
+ * The run is a fixed width that slides rather than a window that shrinks at
+ * the edges. On page 1 of 9 a shrinking window gives "1 2 … 9", which offers
+ * no way at all to reach page 5; a sliding run gives "1 2 3 4 5 … 9".
+ */
+export function pageNumbers(current, pages, span = 5) {
+  if (pages <= span + 2) {
+    return Array.from({ length: pages }, (_, i) => i + 1);
+  }
+
+  let first = Math.max(1, current - Math.floor(span / 2));
+  let last = first + span - 1;
+  if (last > pages) {
+    last = pages;
+    first = Math.max(1, last - span + 1);
+  }
+
+  const wanted = new Set([1, pages]);
+  for (let p = first; p <= last; p += 1) wanted.add(p);
+
+  const out = [];
+  let previous = 0;
+  for (const page of [...wanted].sort((a, b) => a - b)) {
+    // An ellipsis standing in for one page is worse than the page itself: it
+    // costs the same room and hides a place you might want to go.
+    if (page - previous === 2) out.push(previous + 1);
+    else if (page - previous > 2) out.push(null);
+    out.push(page);
+    previous = page;
+  }
+  return out;
+}

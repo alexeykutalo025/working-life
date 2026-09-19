@@ -119,18 +119,28 @@ files.
 with. Untick anything you want left out — searching one drive is much faster
 than searching all of them.
 
-If you already know where your old mail is, press **"Choose a specific
-folder…"**. That opens a window laid out like Windows File Explorer: the
+If you already know where your old mail is, press **"Choose specific folders
+or files…"**. That opens a window laid out like Windows File Explorer: the
 folders down the left, what is inside them on the right, and the path across
 the top. **Tiles**, **List** and **Details** change how the contents are shown,
 the same three ways Explorer does; Details adds the size, the date and what
 kind of file each one is. Recall remembers which you prefer.
 
-Open folders until you reach your mail, then press the button at the bottom.
-You can choose a whole folder, or click one single file to search just that —
-useful when you know everything is in one `.pst`. A file Recall has no reader
-for is still listed, greyed out, saying so, rather than hidden away where you
-would go looking for it. Whatever you choose is offered again next time.
+**Tick anything you want searched.** You can tick as many folders and files as
+you like, from as many different places as you like — the list you are building
+is shown at the bottom of the window and stays there while you move about, so
+mail spread across three folders and a couple of loose files is one search
+rather than five. Take anything back out with the **Remove** beside it.
+
+- **Tick everything in this folder** does the whole folder at once.
+- Hold **Shift** while ticking to take everything between the last one you
+  ticked and this one — useful when a folder holds forty `.pst` files.
+- If you tick nothing at all, the button simply searches the folder you are
+  standing in.
+
+A file Recall has no reader for is still listed, greyed out, saying so, rather
+than hidden away where you would go looking for it; it cannot be ticked.
+Whatever you choose is offered again next time.
 
 A folder that Windows normally skips — `Windows`, `Program Files` and a few
 others — *is* searched when you choose it by hand, and the chooser says so.
@@ -192,7 +202,9 @@ chart. It will not accept a two-digit year either, because *84* could be 1984 or
 
 ### People
 Everyone who appears anywhere in the archive, with when you first and last
-corresponded and how much. Click a name for their whole history: every address
+corresponded and how much. Long lists are shown a page at a time — **25**,
+**50** or **100** — with numbered pages underneath so you can jump straight to
+the middle or the end rather than pressing Next over and over. Click a name for their whole history: every address
 they used, a graph of correspondence over time, and who else was on those
 records.
 

@@ -182,11 +182,14 @@ export function openFolderPicker(onChoose) {
     history: [],            // where we have been, for the Back button
     loadedTree: new Map(),  // path -> entries, so the tree is fetched once
     expanded: new Set(),
-    // A file the user has picked out of the current folder. Clicking a folder
-    // opens it; clicking a file chooses it, because there is nothing to open.
-    // Cleared whenever we move, so the button never offers a file from a
-    // folder that is no longer on screen.
-    selected: null,
+    // Everything ticked so far, as path -> {path, name, kind}. It survives
+    // moving about, which is the whole point: somebody whose mail is spread
+    // over three folders and two loose files should be able to gather all five
+    // and search them in one go.
+    chosen: new Map(),
+    // Where the last tick was, so shift-clicking can fill in the range - the
+    // difference between ticking forty files and ticking one forty times.
+    anchor: null,
   };
 
   // Which button belongs to which folder, so focus can be put back where it
@@ -199,6 +202,8 @@ export function openFolderPicker(onChoose) {
   const content = el('div', { class: 'picker__content' });
   const viewRow = el('div', { class: 'picker__views' });
   const status = el('div', { class: 'picker__status' });
+  const basket = el('div', { class: 'picker__basket' });
+  const tickAll = el('div', { class: 'picker__tick-all-row' });
 
   const back = el('button', {
     class: 'btn', type: 'button', disabled: true,
@@ -216,9 +221,13 @@ export function openFolderPicker(onChoose) {
   const choose = el('button', {
     class: 'btn btn--primary', type: 'button', disabled: true,
     onclick: () => {
-      const target = state.selected || state.path;
-      if (!target) return;
-      onChoose(target);
+      // Nothing ticked means "the folder I am standing in", which keeps the
+      // simple case simple: open a folder, press the button, done.
+      const paths = state.chosen.size
+        ? [...state.chosen.keys()]
+        : (state.path ? [state.path] : []);
+      if (!paths.length) return;
+      onChoose(paths);
       dialog.close();
     },
   }, 'Search this folder');
@@ -245,7 +254,7 @@ export function openFolderPicker(onChoose) {
 
     state.path = listing.path;
     state.listing = listing;
-    state.selected = null;
+    state.anchor = null;
     state.loadedTree.set(listing.path || '', listing.entries);
 
     // Everything above the current folder is open in the tree, so the user can
@@ -267,12 +276,21 @@ export function openFolderPicker(onChoose) {
     up.disabled = !(state.listing && state.listing.parent) && !state.path;
     if (state.listing && !state.listing.parent && state.path) up.disabled = false;
 
-    const target = state.selected || state.path;
-    choose.disabled = !target;
-    choose.textContent = target
-      ? `Search ${folderName(target)}`
-      : 'Search this folder';
-    choose.title = target || '';
+    const ticked = state.chosen.size;
+    if (ticked) {
+      choose.disabled = false;
+      choose.textContent = ticked === 1
+        ? `Search ${folderName([...state.chosen.keys()][0])}`
+        : `Search these ${ticked}`;
+      choose.title = [...state.chosen.keys()].join(', ');
+    } else {
+      choose.disabled = !state.path;
+      choose.textContent = state.path
+        ? `Search ${folderName(state.path)}`
+        : 'Search this folder';
+      choose.title = state.path || '';
+    }
+    drawBasket();
   }
 
   // --- the address bar ----------------------------------------------------
@@ -451,17 +469,20 @@ export function openFolderPicker(onChoose) {
       return;
     }
 
-    // A folder is opened; a file is chosen, because there is nothing to open.
+    // A folder is opened by clicking it; a file is ticked, because there is
+    // nothing to open it into. Either way the tick box does the same job for
+    // both, which is what makes gathering several possible.
     const activate = (entry) => {
       if (entry.kind === 'file') {
-        if (whyNotChoosable(entry)) return;
-        state.selected = state.selected === entry.path ? null : entry.path;
-        drawContent();
-        drawButtons();
+        toggle(entry);
         return;
       }
       go(entry.path);
     };
+
+    clear(tickAll);
+    const all = tickAllRow();
+    if (all) tickAll.append(all);
 
     if (state.view === 'details') content.append(detailsView(listing, activate));
     else if (state.view === 'list') content.append(listView(listing, activate));
@@ -480,10 +501,128 @@ export function openFolderPicker(onChoose) {
         `· ${skipped} normally skipped, marked below`));
     }
 
-    if (state.selected) {
-      status.append(el('span', { class: 'picker__chosen' },
-        `Chosen: ${folderName(state.selected)}`));
+  }
+
+  // --- ticking things -----------------------------------------------------
+
+  function toggle(entry, { shift = false } = {}) {
+    if (whyNotChoosable(entry)) return;
+    const entries = (state.listing && state.listing.entries) || [];
+
+    if (shift && state.anchor !== null) {
+      // Shift fills in everything between the last tick and this one, the way
+      // it does in Explorer. Forty files in two clicks rather than forty.
+      const from = entries.findIndex((e) => e.path === state.anchor);
+      const to = entries.findIndex((e) => e.path === entry.path);
+      if (from !== -1 && to !== -1) {
+        const want = !state.chosen.has(entry.path);
+        for (let i = Math.min(from, to); i <= Math.max(from, to); i += 1) {
+          const item = entries[i];
+          if (whyNotChoosable(item)) continue;
+          if (want) state.chosen.set(item.path, pick(item));
+          else state.chosen.delete(item.path);
+        }
+        state.anchor = entry.path;
+        drawContent();
+        drawButtons();
+        return;
+      }
     }
+
+    if (state.chosen.has(entry.path)) state.chosen.delete(entry.path);
+    else state.chosen.set(entry.path, pick(entry));
+
+    state.anchor = entry.path;
+    drawContent();
+    drawButtons();
+  }
+
+  function pick(entry) {
+    return { path: entry.path, name: entry.name, kind: entry.kind || 'folder' };
+  }
+
+  /** A tick box, the same in all three views. */
+  function tickBox(entry) {
+    const why = whyNotChoosable(entry);
+    return el('input', {
+      type: 'checkbox',
+      class: 'picker__tick',
+      checked: state.chosen.has(entry.path),
+      disabled: why ? true : null,
+      'aria-label': `Search ${entry.name}`,
+      onclick: (e) => {
+        e.stopPropagation();       // ticking is not opening
+        toggle(entry, { shift: e.shiftKey });
+      },
+    });
+  }
+
+  /** Tick or untick everything in this folder at once. */
+  function tickAllRow() {
+    const entries = ((state.listing && state.listing.entries) || [])
+      .filter((e) => !whyNotChoosable(e));
+    if (!entries.length) return null;
+
+    const allTicked = entries.every((e) => state.chosen.has(e.path));
+
+    return el('label', { class: 'check picker__tick-all' },
+      el('input', {
+        type: 'checkbox',
+        checked: allTicked,
+        onchange: () => {
+          for (const entry of entries) {
+            if (allTicked) state.chosen.delete(entry.path);
+            else state.chosen.set(entry.path, pick(entry));
+          }
+          drawContent();
+          drawButtons();
+        },
+      }),
+      el('span', {}, allTicked
+        ? 'Untick everything in this folder'
+        : 'Tick everything in this folder'),
+    );
+  }
+
+  /** What has been gathered so far, and a way to take any of it back out. */
+  function drawBasket() {
+    clear(basket);
+    if (!state.chosen.size) {
+      basket.append(el('p', { class: 'muted small mb-0' },
+        'Nothing ticked. Pressing the button searches the folder you are in. '
+        + 'Tick folders and files to gather several together.'));
+      return;
+    }
+
+    basket.append(el('div', { class: 'picker__basket-head' },
+      el('strong', {}, `${state.chosen.size} chosen`),
+      el('button', {
+        class: 'btn btn--quiet', type: 'button',
+        onclick: () => {
+          state.chosen.clear();
+          drawContent();
+          drawButtons();
+        },
+      }, 'Clear them all'),
+    ));
+
+    const list = el('ul', { class: 'picker__basket-list' });
+    for (const item of state.chosen.values()) {
+      list.append(el('li', {},
+        iconForEntry(item, 16),
+        el('span', { class: 'picker__basket-name', title: item.path }, item.name),
+        el('button', {
+          class: 'btn btn--quiet', type: 'button',
+          'aria-label': `Take ${item.name} out of the list`,
+          onclick: () => {
+            state.chosen.delete(item.path);
+            drawContent();
+            drawButtons();
+          },
+        }, 'Remove'),
+      ));
+    }
+    basket.append(list);
   }
 
   function skipNote(entry) {
@@ -497,12 +636,11 @@ export function openFolderPicker(onChoose) {
   /** The classes and title every entry shares, whichever view is drawn. */
   function entryAttrs(entry, extra) {
     const why = whyNotChoosable(entry);
-    const chosen = state.selected === entry.path;
+    const chosen = state.chosen.has(entry.path);
     return {
       class: `${extra}${chosen ? ' is-selected' : ''}${why ? ' is-unreadable' : ''}`,
       type: 'button',
       disabled: why ? true : null,
-      'aria-pressed': entry.kind === 'file' && !why ? String(chosen) : null,
       title: why ? `${entry.path} — ${why}` : entry.path,
     };
   }
@@ -510,16 +648,19 @@ export function openFolderPicker(onChoose) {
   function tilesView(listing, activate) {
     const grid = el('div', { class: 'picker__tiles' });
     for (const entry of listing.entries) {
-      grid.append(el('button', {
-        ...entryAttrs(entry, 'picker__tile'),
-        onclick: () => activate(entry),
-      },
-        iconForEntry(entry, 44),
-        el('span', { class: 'picker__tile-name' }, entry.name),
-        entry.kind === 'file' && entry.size !== null
-          ? el('span', { class: 'picker__tile-note' }, bytesShort(entry.size))
-          : null,
-        skipNote(entry),
+      grid.append(el('div', { class: 'picker__tile-wrap' },
+        tickBox(entry),
+        el('button', {
+          ...entryAttrs(entry, 'picker__tile'),
+          onclick: () => activate(entry),
+        },
+          iconForEntry(entry, 44),
+          el('span', { class: 'picker__tile-name' }, entry.name),
+          entry.kind === 'file' && entry.size !== null
+            ? el('span', { class: 'picker__tile-note' }, bytesShort(entry.size))
+            : null,
+          skipNote(entry),
+        ),
       ));
     }
     return grid;
@@ -528,13 +669,16 @@ export function openFolderPicker(onChoose) {
   function listView(listing, activate) {
     const wrap = el('div', { class: 'picker__list' });
     for (const entry of listing.entries) {
-      wrap.append(el('button', {
-        ...entryAttrs(entry, 'picker__list-item'),
-        onclick: () => activate(entry),
-      },
-        iconForEntry(entry, 18),
-        el('span', { class: 'picker__list-name' }, entry.name),
-        skipNote(entry),
+      wrap.append(el('div', { class: 'picker__list-row' },
+        tickBox(entry),
+        el('button', {
+          ...entryAttrs(entry, 'picker__list-item'),
+          onclick: () => activate(entry),
+        },
+          iconForEntry(entry, 18),
+          el('span', { class: 'picker__list-name' }, entry.name),
+          skipNote(entry),
+        ),
       ));
     }
     return wrap;
@@ -544,13 +688,14 @@ export function openFolderPicker(onChoose) {
     const body = el('tbody', {});
     for (const entry of listing.entries) {
       const why = whyNotChoosable(entry);
-      const chosen = state.selected === entry.path;
+      const chosen = state.chosen.has(entry.path);
 
       body.append(el('tr', {
         class: `${why ? 'is-unreadable' : 'is-clickable'}${chosen ? ' is-selected' : ''}`,
         onclick: why ? null : () => activate(entry),
         title: why ? `${entry.path} — ${why}` : entry.path,
       },
+        el('td', { class: 'col-check' }, tickBox(entry)),
         el('td', {},
           el('span', { class: 'picker__cell-name' },
             iconForEntry(entry, 18),
@@ -566,6 +711,7 @@ export function openFolderPicker(onChoose) {
     return el('div', { class: 'table-wrap picker__details' },
       el('table', {},
         el('thead', {}, el('tr', {},
+          el('th', { class: 'col-check' }, el('span', { class: 'visually-hidden' }, 'Chosen')),
           el('th', {}, 'Name'),
           el('th', { class: 'num' }, 'Size'),
           el('th', {}, 'Date changed'),
@@ -594,15 +740,16 @@ export function openFolderPicker(onChoose) {
     title: 'Which folder?',
     body: el('div', { class: 'picker' },
       el('p', { class: 'picker__lede' },
-        'Open folders until you reach your old mail, then press the button at '
-        + 'the bottom. You can choose a whole folder, or click one file to '
-        + 'choose just that.'),
+        'Open folders to look inside. Tick anything you want searched — as '
+        + 'many folders and files as you like, from anywhere.'),
       el('div', { class: 'picker__bar' },
         el('div', { class: 'btn-row' }, back, up),
         address,
       ),
       el('div', { class: 'picker__toolbar' }, viewRow, status),
+      tickAll,
       el('div', { class: 'picker__panes' }, tree, content),
+      basket,
     ),
     actions: [
       choose,

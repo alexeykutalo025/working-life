@@ -259,12 +259,13 @@ async function openDriveChooser() {
     el('div', { class: 'btn-row' },
       el('button', {
         class: 'btn', type: 'button',
-        onclick: () => openFolderPicker(addFolder),
-      }, 'Choose a specific folder…'),
+        onclick: () => openFolderPicker((paths) => paths.forEach(addFolder)),
+      }, 'Choose specific folders or files…'),
     ),
     el('p', { class: 'field__help' },
       'If you already know where your old mail is, pointing Recall straight at ' +
-      'that folder takes seconds instead of an hour.'),
+      'it takes seconds instead of an hour. You can pick as many folders and ' +
+      'files as you like, from anywhere on the computer.'),
     el('hr', { class: 'rule' }),
     el('label', { class: 'check' },
       fullHash,

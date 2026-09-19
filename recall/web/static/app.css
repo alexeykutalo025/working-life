@@ -709,7 +709,10 @@ pre.raw {
   display: grid; grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
   border: 1px solid var(--border); border-radius: var(--radius);
   overflow: hidden; background: var(--bg);
-  flex: 1 1 auto; min-height: 260px;
+  /* The one part that flexes. Everything else in the dialog is capped, so the
+     panes take the slack and the dialog itself never grows a scrollbar around
+     the two that are already inside it. */
+  flex: 1 1 auto; min-height: 180px;
 }
 .picker__tree {
   overflow: auto; padding: var(--sp-2);
@@ -779,12 +782,57 @@ tbody tr.is-unreadable td { cursor: not-allowed; }
   font-size: var(--size-small); color: var(--text-muted);
 }
 
+/* --- ticking things to search ----------------------------------------- */
+/*
+   Explorer has a "item check boxes" setting for exactly this job. Boxes beat
+   ctrl-clicking for somebody who is not going to guess that ctrl-click means
+   "and this one too" - and they show what is ticked without hovering.
+*/
+
+.picker__tick { flex: none; }
+.picker__tick-all-row:empty { display: none; }
+.picker__tick-all { display: inline-flex; margin-bottom: var(--sp-2); }
+
+/* What has been gathered so far. Selection survives moving between folders,
+   so it has to be visible - otherwise the user loses track of what they have
+   picked up on the way. */
+.picker__basket {
+  margin-top: var(--sp-3); padding: var(--sp-3) var(--sp-4);
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 116px; overflow-y: auto; flex: none;
+}
+.picker__basket-head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3); margin-bottom: var(--sp-2);
+}
+.picker__basket-list { list-style: none; margin: 0; padding: 0; }
+.picker__basket-list li {
+  display: flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-1) 0; margin: 0;
+}
+.picker__basket-name {
+  flex: 1 1 auto; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600;
+}
+
 /* --- Tiles: Explorer's large-icon view -------------------------------- */
 
 .picker__tiles {
   display: grid; gap: var(--sp-3);
   grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
 }
+/* The tick box sits over the top-left of the tile, as it does in Explorer. */
+.picker__tile-wrap { position: relative; display: flex; }
+.picker__tile-wrap .picker__tick {
+  position: absolute; top: var(--sp-2); left: var(--sp-2); z-index: 1;
+}
+.picker__tile-wrap .picker__tile { flex: 1 1 auto; }
+
+.picker__list-row { display: flex; align-items: center; gap: var(--sp-2); }
+.picker__list-row .picker__list-item { flex: 1 1 auto; min-width: 0; }
+
 .picker__tile {
   display: flex; flex-direction: column; align-items: center; gap: var(--sp-2);
   padding: var(--sp-4) var(--sp-2);
@@ -849,6 +897,31 @@ tbody tr.is-unreadable td { cursor: not-allowed; }
   box-shadow: inset 4px 0 0 var(--accent);
 }
 tbody tr.is-clickable { cursor: pointer; }
+
+/* ==========================================================================
+   Paging - one pager for every long list
+   ========================================================================== */
+
+.pager {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-4); flex-wrap: wrap;
+  margin-top: var(--sp-5); padding-top: var(--sp-4);
+  border-top: 1px solid var(--border);
+}
+.pager__count { color: var(--text-muted); }
+.pager__pages { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; }
+
+/* A page number is a short label, so it does not need the full button width -
+   but it keeps the full 44px height, because it is still something to hit. */
+.pager__page {
+  padding: var(--sp-2) var(--sp-3); min-width: var(--tap);
+  font-variant-numeric: tabular-nums;
+}
+.pager__gap { color: var(--text-muted); padding: 0 var(--sp-1); }
+
+.pager__size { display: flex; align-items: center; gap: var(--sp-2); }
+.pager__size label { margin-bottom: 0; white-space: nowrap; }
+.pager__size select { width: auto; }
 
 /* ==========================================================================
    Utilities

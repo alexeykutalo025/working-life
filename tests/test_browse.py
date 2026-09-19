@@ -9,6 +9,7 @@ picking a drive and a folder on it does not search the folder twice.
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 import pytest
@@ -47,6 +48,20 @@ def client(settings):
     app = create_app(settings)
     with TestClient(app) as c:
         yield c
+        # One scan runs at a time, application-wide and on purpose. A test that
+        # starts one and walks away leaves the next test to collide with it and
+        # get a 409, so each waits for its own to finish.
+        wait_for_idle(c)
+
+
+def wait_for_idle(client, seconds: float = 20.0) -> None:
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        job = client.get("/api/job").json()
+        if not job or job.get("state") != "running":
+            return
+        time.sleep(0.05)
+    raise AssertionError("a background job never finished")
 
 
 # --- listing what is inside a folder --------------------------------------
@@ -146,6 +161,59 @@ def test_a_folder_and_a_file_can_be_chosen_together(scan_settings, here: Path, c
     found = sorted(Path(r["path"]).name
                    for r in conn.execute("SELECT path FROM source_files"))
     assert found == ["alone.pst", "inside.pst"]
+
+
+def test_several_folders_and_files_can_be_chosen_at_once(scan_settings, here: Path, conn):
+    """Mail spread over three places should be gathered in one go.
+
+    This is what the tick boxes in the chooser are for: somebody whose
+    correspondence sits in two folders and one loose file should not have to
+    run three separate searches.
+    """
+    letters = here / "Letters"
+    invoices = here / "Invoices"
+    letters.mkdir()
+    invoices.mkdir()
+    (letters / "letters.pst").write_bytes(PST_HEADER)
+    (invoices / "invoices.pst").write_bytes(PST_HEADER)
+    loose = here / "loose.pst"
+    loose.write_bytes(PST_HEADER)
+    (here / "not-chosen.pst").write_bytes(PST_HEADER)
+
+    Scanner(scan_settings, conn).run([letters, invoices, loose])
+
+    found = sorted(Path(r["path"]).name
+                   for r in conn.execute("SELECT path FROM source_files"))
+    assert found == ["invoices.pst", "letters.pst", "loose.pst"]
+
+
+def test_the_api_accepts_several_roots(client, here: Path):
+    one = here / "One"
+    two = here / "Two"
+    one.mkdir()
+    two.mkdir()
+    loose = here / "loose.pst"
+    loose.write_bytes(PST_HEADER)
+
+    response = client.post("/api/scan", json={
+        "roots": [str(one), str(two), str(loose)],
+    })
+
+    assert response.status_code == 200
+    assert len(response.json()["roots"]) == 3
+
+
+def test_one_missing_root_does_not_sink_the_others(client, here: Path):
+    """Something deleted between choosing it and pressing the button."""
+    real = here / "Real"
+    real.mkdir()
+
+    response = client.post("/api/scan", json={
+        "roots": [str(real), str(here / "vanished")],
+    })
+
+    assert response.status_code == 200
+    assert response.json()["roots"] == [str(real)]
 
 
 def test_the_api_accepts_a_file_as_something_to_search(client, here: Path):

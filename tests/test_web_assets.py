@@ -332,3 +332,103 @@ def test_every_colour_is_a_colour():
             assert not value.startswith("--"), (
                 f"{name} in {opener} is {value!r} - it needs var({value})"
             )
+
+
+# ---------------------------------------------------------------------------
+# The pager's page numbers
+# ---------------------------------------------------------------------------
+#
+# pageNumbers is the one piece of real logic in ui.js, and getting it wrong is
+# not obvious from looking at the screen: an over-narrow window renders "1 2 …
+# 9" on page one, which is tidy, plausible, and offers no way at all to reach
+# page five. It is ported here rather than left untested.
+
+
+def page_numbers(current: int, pages: int, span: int = 5) -> list:
+    """The Python twin of pageNumbers() in ui.js."""
+    if pages <= span + 2:
+        return list(range(1, pages + 1))
+
+    first = max(1, current - span // 2)
+    last = first + span - 1
+    if last > pages:
+        last = pages
+        first = max(1, last - span + 1)
+
+    wanted = {1, pages} | set(range(first, last + 1))
+
+    out: list = []
+    previous = 0
+    for page in sorted(wanted):
+        if page - previous == 2:
+            out.append(previous + 1)
+        elif page - previous > 2:
+            out.append(None)
+        out.append(page)
+        previous = page
+    return out
+
+
+def test_the_twin_matches_the_javascript():
+    """If ui.js changes shape, this file is where it is noticed."""
+    source = (WEB / "static/js/ui.js").read_text(encoding="utf-8")
+    assert "export function pageNumbers(current, pages, span = 5)" in source, (
+        "pageNumbers has changed signature; the Python twin below is now a lie"
+    )
+
+
+def test_a_short_list_shows_every_page():
+    assert page_numbers(1, 1) == [1]
+    assert page_numbers(1, 7) == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_the_first_page_still_offers_a_run_of_pages():
+    """"1 2 … 9" is the bug this guards: page five is then unreachable."""
+    assert page_numbers(1, 9) == [1, 2, 3, 4, 5, None, 9]
+
+
+def test_the_middle_is_surrounded_on_both_sides():
+    assert page_numbers(5, 9) == [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+
+def test_the_last_page_slides_the_run_back():
+    assert page_numbers(9, 9) == [1, None, 5, 6, 7, 8, 9]
+
+
+def test_a_very_long_list_stays_a_handful_of_buttons():
+    for current in (1, 2, 150, 299, 300):
+        shown = page_numbers(current, 300)
+        assert len(shown) <= 9, f"page {current} of 300 rendered {len(shown)} slots"
+        assert shown[0] == 1 and shown[-1] == 300, "both ends are always reachable"
+
+
+def test_every_page_offered_is_a_real_page():
+    for pages in (1, 5, 8, 9, 40, 300):
+        for current in range(1, pages + 1):
+            for page in page_numbers(current, pages):
+                if page is None:
+                    continue
+                assert 1 <= page <= pages
+
+
+def test_the_page_you_are_on_is_always_offered():
+    for pages in (1, 5, 9, 40, 300):
+        for current in range(1, pages + 1):
+            assert current in page_numbers(current, pages), (
+                f"page {current} of {pages} does not include itself"
+            )
+
+
+def test_a_gap_never_hides_a_single_page():
+    """An ellipsis standing in for one page is worse than the page itself."""
+    for pages in (9, 40, 300):
+        for current in range(1, pages + 1):
+            shown = page_numbers(current, pages)
+            for i, page in enumerate(shown):
+                if page is not None:
+                    continue
+                before, after = shown[i - 1], shown[i + 1]
+                assert after - before > 2, (
+                    f"page {current} of {pages}: … stands in for only "
+                    f"{after - before - 1} page(s)"
+                )
