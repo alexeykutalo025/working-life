@@ -9,7 +9,7 @@ import { api } from '../api.js';
 import { folderName, openFolderPicker } from '../folderpicker.js';
 import {
   bytes, clear, date, debounce, el, empty, errorDialog, errorNotice, field,
-  loading, modal, mount, notice, num, plural, progressBar, setTitle,
+  loading, modal, mount, notice, num, pager, plural, progressBar, setTitle,
   severityTag, stat, tag,
 } from '../ui.js';
 
@@ -17,12 +17,26 @@ const state = {
   sort: 'size',
   order: 'desc',
   filters: {},
-  selected: new Set(),
+  // id -> row, not a set of ids. A tick survives paging, and what can be done
+  // with a ticked file - read it, or fetch it back from OneDrive first - is
+  // decided from the row. Holding ids alone meant the buttons could only see
+  // the page you were on: tick forty files across three pages and the bar said
+  // forty while the button offered the twelve still on screen. That is the
+  // whole reason this is a Map.
+  selected: new Map(),
   rows: [],
   total: 0,
+  offset: 0,
+  pageSize: 50,
 };
 
 let pollTimer = null;
+
+/** Anything that changes which files match starts again at the first page. */
+function reload() {
+  state.offset = 0;
+  return refreshTable();
+}
 
 export async function render() {
   setTitle('Files found');
@@ -132,7 +146,7 @@ function renderControls() {
       el('button', {
         class: 'btn',
         type: 'button',
-        onclick: async () => { await refreshSummary(); await refreshTable(); },
+        onclick: async () => { await refreshSummary(); await reload(); },
       }, 'Refresh this list'),
     ),
 
@@ -141,7 +155,7 @@ function renderControls() {
         type: 'search', id: 'filter-search', placeholder: 'part of a file name or folder',
         oninput: debounce(() => {
           state.filters.search = document.getElementById('filter-search').value.trim();
-          refreshTable();
+          reload();
         }),
       })),
       field('Show', el('select', {
@@ -152,7 +166,7 @@ function renderControls() {
           state.filters.only_placeholders = v === 'cloud';
           state.filters.only_problems = v === 'problems';
           state.filters.state = v === 'unread' ? 'pending' : (v === 'read' ? 'done' : '');
-          refreshTable();
+          reload();
         },
       },
         el('option', { value: '' }, 'Everything'),
@@ -166,7 +180,7 @@ function renderControls() {
         id: 'filter-container',
         onchange: () => {
           state.filters.container = document.getElementById('filter-container').value;
-          refreshTable();
+          reload();
         },
       },
         el('option', { value: '' }, 'Anywhere'),
@@ -493,14 +507,14 @@ async function pollJob() {
         : null,
     ));
     await refreshSummary();
-    await refreshTable();
+    await reload();
     return;
   }
 
   if (job.state === 'canceled') {
     host.append(notice('warning', 'Stopped', el('p', {}, job.message)));
     await refreshSummary();
-    await refreshTable();
+    await reload();
     return;
   }
 
@@ -514,7 +528,7 @@ async function pollJob() {
             el('pre', { class: 'raw' }, job.detail.traceback))
         : null,
     ));
-    await refreshTable();
+    await reload();
   }
 }
 
@@ -538,7 +552,8 @@ async function refreshTable() {
     data = await api.sources({
       sort: state.sort,
       order: state.order,
-      limit: 500,
+      limit: state.pageSize,
+      offset: state.offset,
       ...state.filters,
     });
   } catch (err) {
@@ -550,6 +565,14 @@ async function refreshTable() {
   state.rows = data.rows;
   state.total = data.total;
   clear(host);
+
+  // Narrowing a filter while on page nine can leave page nine past the end.
+  // Step back to the last real page rather than show a blank list under a
+  // pager insisting there is more.
+  if (!data.rows.length && data.total > 0 && state.offset > 0) {
+    state.offset = Math.max(0, (Math.ceil(data.total / state.pageSize) - 1) * state.pageSize);
+    return refreshTable();
+  }
 
   if (!data.rows.length) {
     host.append(empty(
@@ -570,28 +593,34 @@ async function refreshTable() {
       onclick: () => {
         if (state.sort === key) state.order = state.order === 'desc' ? 'asc' : 'desc';
         else { state.sort = key; state.order = 'desc'; }
-        refreshTable();
+        reload();
       },
       'aria-label': `Sort by ${label}`,
     }, label + (state.sort === key ? (state.order === 'desc' ? '  ↓' : '  ↑') : '')),
   );
 
+  // This ticks everything on *this page*, which is all it has ever done - the
+  // label used to claim the whole list.
+  const here = data.rows.filter((r) => state.selected.has(r.id)).length;
+
   const selectAll = el('input', {
     type: 'checkbox',
-    'aria-label': 'Select every file in this list',
+    checked: here === data.rows.length,
+    'aria-label': 'Tick every file on this page',
+    title: 'Tick every file on this page',
     onchange: (e) => {
       state.rows.forEach((r) => {
-        if (e.target.checked) state.selected.add(r.id); else state.selected.delete(r.id);
+        if (e.target.checked) state.selected.set(r.id, r);
+        else state.selected.delete(r.id);
       });
       refreshTable();
     },
   });
+  // Part of a page ticked is neither on nor off, and a box showing only those
+  // two states says something untrue about the third.
+  selectAll.indeterminate = here > 0 && here < data.rows.length;
 
   host.append(
-    el('p', { class: 'muted' },
-      data.total > data.rows.length
-        ? `Showing the first ${num(data.rows.length)} of ${num(data.total)} files.`
-        : `Showing all ${plural(data.total, 'file')}.`),
     el('div', { class: 'table-wrap' },
       el('table', {},
         el('thead', {},
@@ -608,6 +637,21 @@ async function refreshTable() {
         el('tbody', {}, ...data.rows.map(rowView)),
       ),
     ),
+    pager({
+      total: data.total,
+      offset: state.offset,
+      pageSize: state.pageSize,
+      unit: 'file',
+      onGo: (offset) => {
+        state.offset = offset;
+        refreshTable();
+      },
+      onPageSize: (size) => {
+        state.pageSize = size;
+        state.offset = 0;
+        refreshTable();
+      },
+    }),
   );
   renderSelectionActions();
 }
@@ -618,8 +662,20 @@ function rowView(r) {
     checked: state.selected.has(r.id),
     'aria-label': `Select ${r.name}`,
     onchange: (e) => {
-      if (e.target.checked) state.selected.add(r.id); else state.selected.delete(r.id);
+      if (e.target.checked) state.selected.set(r.id, r);
+      else state.selected.delete(r.id);
       renderSelectionActions();
+      // Redrawing the whole table for one tick would move the row out from
+      // under the pointer, so the two things that depend on it are updated
+      // where they stand.
+      const tr = e.target.closest('tr');
+      if (tr) tr.classList.toggle('is-selected', e.target.checked);
+      const all = document.querySelector('.col-check input');
+      if (all) {
+        const here = state.rows.filter((x) => state.selected.has(x.id)).length;
+        all.checked = here === state.rows.length;
+        all.indeterminate = here > 0 && here < state.rows.length;
+      }
     },
   });
 
@@ -672,12 +728,20 @@ function renderSelectionActions() {
     return;
   }
 
-  const chosen = state.rows.filter((r) => state.selected.has(r.id));
+  // Every ticked file, not only the ones on this page. See state.selected.
+  const chosen = [...state.selected.values()];
   const cloud = chosen.filter((r) => r.is_placeholder);
   const readable = chosen.filter((r) => !r.is_placeholder && r.is_readable);
+  const stuck = chosen.length - cloud.length - readable.length;
+  const onThisPage = state.rows.filter((r) => state.selected.has(r.id)).length;
 
-  host.append(
-    el('span', { class: 'strong' }, `${plural(n, 'file')} selected.`),
+  // el() drops nulls; append() renders them as the word "null", which is
+  // exactly what this bar has been showing between its buttons.
+  host.append(...[
+    el('span', { class: 'strong' },
+      onThisPage < n
+        ? `${plural(n, 'file')} ticked, ${num(onThisPage)} of them on this page.`
+        : `${plural(n, 'file')} ticked.`),
     readable.length
       ? el('button', {
           class: 'btn btn--primary', type: 'button',
@@ -690,11 +754,15 @@ function renderSelectionActions() {
           onclick: () => confirmHydrate(cloud.map((r) => r.id)),
         }, `Download ${plural(cloud.length, 'cloud-only file')} from OneDrive`)
       : null,
+    stuck
+      ? el('span', { class: 'qualified-note mb-0' },
+          `${plural(stuck, 'ticked file')} cannot be read while Outlook holds it open.`)
+      : null,
     el('button', {
       class: 'btn', type: 'button',
       onclick: () => { state.selected.clear(); refreshTable(); },
-    }, 'Clear selection'),
-  );
+    }, 'Clear the ticks'),
+  ].filter(Boolean));
 }
 
 // --- OneDrive download, only after showing the cost -----------------------

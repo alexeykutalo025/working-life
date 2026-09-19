@@ -329,6 +329,12 @@ def list_sources(
 ) -> dict[str, Any]:
     conn = _conn(request)
 
+    # A page is a page - the same ceiling the people, problems and search
+    # listings keep. Without it, ?limit=-1 goes straight into SQL, where a
+    # negative LIMIT means "no limit" and the screen is handed the lot.
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
+
     sort_columns = {
         "size": "sf.size_bytes",
         "name": "sf.path",

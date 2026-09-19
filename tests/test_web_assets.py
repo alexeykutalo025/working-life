@@ -168,6 +168,53 @@ def test_braces_and_brackets_balance(path: Path):
         )
 
 
+def top_level_arguments(text: str, start: int) -> list[str]:
+    """The arguments of the call whose opening paren is just before `start`."""
+    depth, i = 1, start
+    while i < len(text) and depth:
+        if text[i] in "([{":
+            depth += 1
+        elif text[i] in ")]}":
+            depth -= 1
+        i += 1
+
+    args, buf, depth = [], "", 0
+    for c in text[start:i - 1]:
+        if c in "([{":
+            depth += 1
+        elif c in ")]}":
+            depth -= 1
+        if c == "," and depth == 0:
+            args.append(buf)
+            buf = ""
+        else:
+            buf += c
+    args.append(buf)
+    return args
+
+
+@pytest.mark.parametrize("path", JS_FILES, ids=lambda p: p.name)
+def test_nothing_appends_a_bare_null(path: Path):
+    """`x ? el(...) : null` is safe inside el() and a visible bug in append().
+
+    el() drops null children. Node.append does not - it converts null to the
+    string "null" and puts it on the page. The selection bar on Files found
+    read "3 files ticked. [Read 3 files] nullnull [Clear the ticks]" for
+    exactly this reason, in a program whose whole promise is that what you see
+    is what is there.
+
+    Only the top level of each call matters: a conditional nested inside an
+    el(...) argument is el's problem, and el handles it.
+    """
+    source = path.read_text(encoding="utf-8")
+    for m in re.finditer(r"\.append\(", source):
+        for arg in top_level_arguments(source, m.end()):
+            assert not re.search(r":\s*null\s*$", arg.strip()), (
+                f"{path.name}:{source[:m.start()].count(chr(10)) + 1} appends a "
+                f"value that can be null; filter it or hand it to el()"
+            )
+
+
 # ---------------------------------------------------------------------------
 # Promises the specification makes
 # ---------------------------------------------------------------------------
