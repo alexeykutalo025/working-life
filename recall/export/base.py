@@ -204,7 +204,13 @@ class IntegrityStatement:
         }
 
     def rows(self) -> list[tuple[str, str]]:
-        """Flat (label, value) pairs, for the XLSX Integrity sheet."""
+        """Flat (label, value) pairs, for the XLSX Integrity sheet.
+
+        Every row is a fact with a name. No blank spacers and no prose blocks:
+        the sheet is a table, so that it reads well *and* parses, and the
+        findings have a sheet of their own rather than a paragraph in column B
+        where a critical one looked exactly like a note.
+        """
         out = [
             ("Made on (UTC)", self.generated_utc),
             ("From the archive", self.archive_path),
@@ -216,7 +222,7 @@ class IntegrityStatement:
                 ("Records that could NOT be read", f"about {self.estimated_missing:,}")
             )
             out.append(
-                ("Is this export complete?", "NO - see the problems listed below")
+                ("Is this export complete?", "NO - see the Problems sheet")
             )
         else:
             out.append(("Is this export complete?", "Nothing is known to be missing"))
@@ -224,19 +230,18 @@ class IntegrityStatement:
             out.append(
                 ("Records with no date (not in any date range)", f"{self.undated_count:,}")
             )
-        out.append(("", ""))
         for q in self.qualifiers:
             out.append(
                 (
-                    f"Problem ({q.severity})",
+                    f"Why this count may be short ({q.severity})",
                     q.text
                     + (f" - about {q.estimated_loss:,} records" if q.estimated_loss else ""),
                 )
             )
-        if self.findings:
-            out.append(("", ""))
-            for f in self.findings:
-                out.append((f"{f['severity']}: {f['code']}", f["title"]))
+        out.append((
+            "Problems listed on the Problems sheet",
+            f"{len(self.findings):,}" if self.findings else "none",
+        ))
         return out
 
 

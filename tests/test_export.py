@@ -320,13 +320,39 @@ def test_xlsx_survives_control_characters_in_real_mail(archive, settings):
 
 
 def test_xlsx_neutralises_formula_injection():
-    """Excel treats a leading = as a formula in a workbook just as in a CSV."""
+    """A leading = makes a formula in a workbook, exactly as in a CSV."""
     pytest.importorskip("openpyxl")
     from recall.export.xlsx_export import _cell
 
     assert _cell("=1+1").startswith("'")
-    assert _cell("-- Tim McCarthy").startswith("'")
     assert _cell("Quarterly figures") == "Quarterly figures"
+
+
+def test_xlsx_leaves_alone_the_characters_only_a_csv_import_reacts_to():
+    """The guard used to cover = + - @, and corrupted three values in four.
+
+    Excel treats all four as formula starts when it *imports* text, which is
+    why the CSV exporter still guards them all. A cell written straight into a
+    workbook is not imported, and only "=" means anything. Written as plain
+    strings these three store as text - tested against a real .xlsx, not
+    assumed - so the apostrophe did nothing but show up in the client's
+    spreadsheet in front of their own telephone numbers.
+    """
+    pytest.importorskip("openpyxl")
+    from recall.export.xlsx_export import _cell
+
+    assert _cell("+44 20 7946 0000") == "+44 20 7946 0000"
+    assert _cell("-- Tim McCarthy") == "-- Tim McCarthy"
+    assert _cell("@thebusinessofgood") == "@thebusinessofgood"
+
+
+def test_xlsx_does_not_turn_a_number_that_is_not_one_into_a_number():
+    """"0044123456" used to export as 44,123,456. A different phone number."""
+    pytest.importorskip("openpyxl")
+    from recall.export.xlsx_export import _cell
+
+    assert _cell("0044123456") == "0044123456"
+    assert _cell("007") == "007"
 
 
 def test_xlsx_truncates_a_cell_too_long_for_excel():

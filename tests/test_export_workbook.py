@@ -22,6 +22,7 @@ import pytest
 from recall.export import ExportError
 from recall.export.rows import NOTE_COLUMNS, TASK_COLUMNS, note_rows, task_rows
 from recall.export.selection import export_search
+from recall.export.xlsx_export import REFERENCE_SHEETS
 from recall.extract import Extractor
 from recall.scan.walker import Scanner
 from tests.fixtures.generate import generate_eml, generate_ics
@@ -181,7 +182,7 @@ def test_the_count_matches_the_rows_actually_written(archive, settings):
 
     written = sum(
         book[name].max_row - 1                      # less the header row
-        for name in book.sheetnames if name != "Integrity"
+        for name in book.sheetnames if name not in REFERENCE_SHEETS
     )
     assert written == result["total_records"]
 
@@ -203,7 +204,8 @@ def test_a_task_only_search_still_produces_a_workbook(archive, settings):
     result = export_search(archive, settings, fmt="xlsx", kind="task")
     book = openpyxl.load_workbook(result["files"][0]["file"])
 
-    assert book.sheetnames == ["Integrity", "Tasks"]
+    # The exact list, so a sheet nobody meant to add cannot appear quietly.
+    assert book.sheetnames == [*REFERENCE_SHEETS, "Tasks"]
 
 
 def test_a_sheet_name_excel_would_refuse_is_made_safe():

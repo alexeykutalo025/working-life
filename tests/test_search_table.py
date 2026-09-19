@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from recall.api.app import create_app
+from recall.export.xlsx_export import REFERENCE_SHEETS
 from recall.extract import Extractor
 from recall.scan.walker import Scanner
 from tests.fixtures.generate import generate_eml, generate_ics
@@ -239,7 +240,8 @@ def test_the_download_respects_the_filters(client, tmp_path: Path):
     saved.write_bytes(response.content)
 
     book = openpyxl.load_workbook(saved)
-    assert book.sheetnames == ["Integrity", "Calendar"]
+    # The exact list: asking for calendar entries must not also bring the mail.
+    assert book.sheetnames == [*REFERENCE_SHEETS, "Calendar"]
 
 
 def test_a_csv_download_is_also_possible(client):
