@@ -22,3 +22,4 @@ tests/fixtures/generated*/
 .idea/
 Thumbs.db
 desktop.ini
+.claude/launch.json

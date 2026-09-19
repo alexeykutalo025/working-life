@@ -244,12 +244,43 @@ async function openDriveChooser() {
 
   const fullHash = el('input', { type: 'checkbox' });
 
+  // Folders picked by hand are appended here, ticked, so the user sees the
+  // choice land in the same list as everything else.
+  const picked = el('div', { class: 'stack' });
+
+  const addFolder = (path) => {
+    if (boxes.has(path)) {
+      boxes.get(path).input.checked = true;
+      return;
+    }
+    const input = el('input', { type: 'checkbox', checked: true });
+    boxes.set(path, { input, target: { path } });
+    picked.append(el('label', { class: 'check' },
+      input,
+      el('span', {},
+        el('strong', {}, folderName(path)),
+        el('span', { class: 'check__note' }, path),
+        el('span', { class: 'check__note' }, 'A folder you chose just now.'),
+      ),
+    ));
+  };
+
   const body = el('div', {},
     el('p', {},
       'Everything is ticked to start with, which searches the whole computer. ' +
       'Untick anything you want to leave out — searching one drive is much faster.'),
     list,
-    el('hr', { style: 'margin:24px 0;border:0;border-top:1px solid var(--border)' }),
+    picked,
+    el('div', { class: 'btn-row' },
+      el('button', {
+        class: 'btn', type: 'button',
+        onclick: () => openFolderPicker(addFolder),
+      }, 'Choose a specific folder…'),
+    ),
+    el('p', { class: 'field__help' },
+      'If you already know where your old mail is, pointing Recall straight at ' +
+      'that folder takes seconds instead of an hour.'),
+    el('hr', { class: 'rule' }),
     el('label', { class: 'check' },
       fullHash,
       el('span', {},
@@ -288,6 +319,108 @@ async function openDriveChooser() {
       el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, 'Cancel'),
     ],
   });
+}
+
+// --- picking one folder ---------------------------------------------------
+//
+// A file-explorer-shaped chooser, kept to what the job needs: folders only,
+// because the user is choosing a place to search rather than a file to open.
+// Nothing here is a tree view - one level at a time with a breadcrumb is far
+// easier to follow than an expanding tree, and it cannot get into a state
+// where the user has lost track of where they are.
+
+function folderName(path) {
+  const parts = String(path).replace(/[\\/]+$/, '').split(/[\\/]/);
+  return parts[parts.length - 1] || path;
+}
+
+function openFolderPicker(onChoose) {
+  const listing = el('div', { class: 'stack' }, loading('Looking at this computer'));
+  const where = el('div', { class: 'picker__where' });
+  let current = null;
+
+  const go = async (path) => {
+    clear(listing);
+    clear(where);
+    listing.append(loading('Opening the folder'));
+
+    let data;
+    try {
+      data = await api.browseFolders(path);
+    } catch (err) {
+      clear(listing);
+      listing.append(errorNotice(err));
+      return;
+    }
+
+    current = data.path;
+    useThis.disabled = !data.path;
+    clear(listing);
+
+    // Where we are, as pieces you can click to climb back out.
+    where.append(el('button', {
+      class: 'btn btn--quiet', type: 'button', onclick: () => go(''),
+    }, 'This computer'));
+    for (const crumb of data.crumbs || []) {
+      where.append(el('span', { class: 'picker__sep', 'aria-hidden': 'true' }, '›'));
+      where.append(el('button', {
+        class: 'btn btn--quiet', type: 'button', onclick: () => go(crumb.path),
+      }, crumb.name));
+    }
+
+    if (data.parent) {
+      listing.append(el('button', {
+        class: 'btn btn--block picker__up', type: 'button',
+        onclick: () => go(data.parent),
+      }, '↑ Up one level'));
+    }
+
+    if (!data.readable) {
+      listing.append(notice('warning', 'Recall cannot open this folder', data.note));
+      return;
+    }
+
+    for (const entry of data.entries) {
+      listing.append(el('button', {
+        class: 'btn btn--block picker__folder', type: 'button',
+        onclick: () => go(entry.path),
+      },
+        el('span', { class: 'picker__name' }, entry.name),
+        entry.excluded_by_default
+          ? el('span', { class: 'check__note' },
+              'Normally skipped — Recall will search it because you chose it.')
+          : null,
+      ));
+    }
+
+    if (data.note) listing.append(el('p', { class: 'muted' }, data.note));
+  };
+
+  const useThis = el('button', {
+    class: 'btn btn--primary', type: 'button', disabled: true,
+    onclick: () => {
+      if (!current) return;
+      onChoose(current);
+      dialog.close();
+    },
+  }, 'Use this folder');
+
+  const dialog = modal({
+    title: 'Which folder?',
+    body: el('div', { class: 'picker' },
+      el('p', {},
+        'Open folders until you reach the one your old mail is in, then press ' +
+        '“Use this folder”. Only folders are shown.'),
+      where,
+      listing,
+    ),
+    actions: [
+      useThis,
+      el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, 'Cancel'),
+    ],
+  });
+
+  go('');
 }
 
 function mountModalError(err) {
@@ -473,6 +606,11 @@ async function pollJob() {
         : null,
       job.detail && job.detail.skipped_roots && job.detail.skipped_roots.length
         ? el('p', {}, `These places were skipped because they do not exist: ${job.detail.skipped_roots.join(', ')}`)
+        : null,
+      job.detail && job.detail.covered_roots && job.detail.covered_roots.length
+        ? el('p', {},
+            'These were already inside somewhere else you chose, so they were ' +
+            `searched once rather than twice: ${job.detail.covered_roots.join(', ')}`)
         : null,
       job.detail && job.detail.unreadable_dirs
         ? el('p', {},

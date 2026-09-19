@@ -199,9 +199,48 @@ export function loading(what = 'Loading') {
 
 // --- modal ----------------------------------------------------------------
 
+const FOCUSABLE =
+  'button:not([disabled]), input:not([disabled]), select:not([disabled]), ' +
+  'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+
+/** Dialogs currently open, innermost last. */
+const openModals = [];
+
+/**
+ * A dialog box.
+ *
+ * Dialogs stack. The folder chooser opens one from inside another, and an
+ * earlier version cleared the whole mount point on open, which silently threw
+ * away the dialog underneath along with everything the user had ticked in it.
+ *
+ * The keydown listener is removed on every way out, not only on Escape. It
+ * used to survive a dialog closed by its own button, so a session spent
+ * acknowledging findings accumulated one listener per dialog, every one of
+ * them still calling close() on a dialog that was no longer there.
+ */
 export function modal({ title, body, actions, onClose }) {
   const root = document.getElementById('modal-root');
-  const close = () => { clear(root); if (onClose) onClose(); };
+  const returnFocusTo = document.activeElement;
+  let closed = false;
+
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey, true);
+    backdrop.remove();
+    const at = openModals.indexOf(entry);
+    if (at !== -1) openModals.splice(at, 1);
+    // Hand focus back to whatever opened this, so a keyboard user is not
+    // dropped at the top of the page.
+    if (returnFocusTo && document.contains(returnFocusTo)) returnFocusTo.focus();
+    if (onClose) onClose();
+  };
+
+  const panel = el('div', { class: 'modal' },
+    el('h2', { class: 'modal__title' }, title),
+    el('div', { class: 'modal__body' }, body),
+    el('div', { class: 'modal__actions' }, ...(actions || [])),
+  );
 
   const backdrop = el('div', {
     class: 'modal-backdrop',
@@ -209,20 +248,44 @@ export function modal({ title, body, actions, onClose }) {
     'aria-modal': 'true',
     'aria-label': title,
     onclick: (e) => { if (e.target === backdrop) close(); },
-  },
-    el('div', { class: 'modal' },
-      el('h2', { class: 'modal__title' }, title),
-      body,
-      el('div', { class: 'modal__actions' }, ...(actions || [])),
-    ),
-  );
+  }, panel);
 
-  const onKey = (e) => { if (e.key === 'Escape') { close(); document.removeEventListener('keydown', onKey); } };
-  document.addEventListener('keydown', onKey);
+  const entry = { close, backdrop };
 
-  clear(root);
+  const onKey = (e) => {
+    // Only the topmost dialog responds, or Escape would close the whole stack.
+    if (openModals[openModals.length - 1] !== entry) return;
+
+    if (e.key === 'Escape') {
+      e.stopPropagation();
+      close();
+      return;
+    }
+    if (e.key !== 'Tab') return;
+
+    // Keep Tab inside the dialog; behind it the page is inert to the eye and
+    // should be inert to the keyboard too.
+    const stops = [...panel.querySelectorAll(FOCUSABLE)]
+      .filter((node) => node.offsetParent !== null || node === document.activeElement);
+    if (!stops.length) return;
+
+    const first = stops[0];
+    const last = stops[stops.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  };
+
+  document.addEventListener('keydown', onKey, true);
+
   root.append(backdrop);
-  const focusable = backdrop.querySelector('button, input, a[href], select, textarea');
+  openModals.push(entry);
+
+  const focusable = panel.querySelector(FOCUSABLE);
   if (focusable) focusable.focus();
   return { close };
 }

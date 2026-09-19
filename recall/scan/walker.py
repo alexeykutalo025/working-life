@@ -104,6 +104,10 @@ class ScanProgress:
     scan_run_id: int | None = None
     message: str = ""
     roots: list[str] = field(default_factory=list)
+    #: Roots dropped because another chosen root already contains them. Kept so
+    #: the screen can say so rather than leaving the user to wonder why a
+    #: folder they ticked is not in the list of places searched.
+    covered_roots: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict:
         return {
@@ -119,11 +123,50 @@ class ScanProgress:
             "scan_run_id": self.scan_run_id,
             "message": self.message,
             "roots": list(self.roots),
+            "covered_roots": list(self.covered_roots),
         }
 
 
 def _utc_now() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def collapse_nested_roots(roots: list[Path]) -> tuple[list[Path], list[str]]:
+    """Drop roots that another chosen root already contains.
+
+    Picking a whole drive and a folder on it used to be rare; with a folder
+    chooser it is the obvious mistake to make. Walking both would visit the
+    folder twice - the junction guard catches it only by luck of ordering,
+    since the stack is popped rather than queued.
+
+    Returns the roots to walk and the ones dropped, because a folder the user
+    ticked vanishing from the list of places searched needs explaining.
+    """
+    resolved: list[tuple[Path, Path]] = []
+    for root in roots:
+        try:
+            resolved.append((root, root.resolve()))
+        except OSError:
+            resolved.append((root, root))
+
+    # Shortest paths first, so a parent is always considered before its child.
+    order = sorted(range(len(resolved)), key=lambda i: len(resolved[i][1].parts))
+
+    keep: list[Path] = []
+    kept_resolved: list[Path] = []
+    covered: list[str] = []
+
+    for i in order:
+        original, real = resolved[i]
+        if any(real == k or k in real.parents for k in kept_resolved):
+            covered.append(str(original))
+            continue
+        keep.append(original)
+        kept_resolved.append(real)
+
+    # Give back the user's own ordering for the ones being searched.
+    keep.sort(key=lambda p: [str(r[0]) for r in resolved].index(str(p)))
+    return keep, covered
 
 
 def _excluded(dir_path: Path, exclude_dirs: list[str]) -> bool:
@@ -277,7 +320,12 @@ def _walk_one(
             return
         current = stack.pop()
 
-        if _excluded(current, exclude):
+        # The never-search list exists to keep a whole-drive sweep out of
+        # Windows and Program Files. It must not overrule a folder the user
+        # pointed at deliberately: picking D:\ProgramData\OldMail and getting
+        # silence back, with nothing said, is the worst kind of failure. The
+        # list still applies to everything underneath.
+        if current != root and _excluded(current, exclude):
             continue
 
         # Guard against junction loops by remembering (device, inode).
@@ -428,7 +476,9 @@ class Scanner:
     ) -> ScanProgress:
         """Walk, record, hash, mark duplicates, then run the integrity checks."""
         roots = roots or self.settings.effective_scan_roots()
+        roots, covered = collapse_nested_roots(roots)
         self.progress.roots = [str(r) for r in roots]
+        self.progress.covered_roots = covered
         self.progress.started_utc = _utc_now()
         self.progress.state = "running"
 

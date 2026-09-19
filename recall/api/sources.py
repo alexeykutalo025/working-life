@@ -34,7 +34,7 @@ def _conn(request: Request):
 class DriveOption(BaseModel):
     path: str
     label: str
-    kind: Literal["drive", "onedrive", "outlook"]
+    kind: Literal["drive", "onedrive", "outlook", "folder"]
     total_bytes: int | None = None
     free_bytes: int | None = None
     exists: bool = True
@@ -101,14 +101,42 @@ class NoteRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+@router.get("/folders")
+def browse_folders(request: Request, path: str = "") -> dict[str, Any]:
+    """What folders are inside this one, for the folder chooser.
+
+    With no path, the drives. Folders only - the user is choosing a place to
+    search, and listing their files would be noise. A folder that cannot be
+    opened comes back saying so rather than as an error.
+    """
+    from ..scan.browse import list_folder
+
+    return list_folder(path, _settings(request)).as_dict()
+
+
 @router.get("/scan/targets", response_model=list[DriveOption])
-def scan_targets() -> list[DriveOption]:
+def scan_targets(request: Request) -> list[DriveOption]:
     """Every place Recall could search, for the drive chooser.
 
     Ticked by default is everything, which is the spec's default behaviour;
-    the user narrows it by unticking.
+    the user narrows it by unticking. Folders the user chose before are offered
+    too, but unticked: they were a deliberate choice last time and should be a
+    deliberate choice again.
     """
+    from ..scan.browse import recent_folders
+
     options: list[DriveOption] = []
+
+    for folder in recent_folders(_conn(request)):
+        options.append(
+            DriveOption(
+                path=folder,
+                label=Path(folder).name or folder,
+                kind="folder",
+                exists=True,
+                note="A folder you chose before.",
+            )
+        )
 
     for drive in fixed_drives():
         total = free = None
@@ -175,10 +203,14 @@ def scan_targets() -> list[DriveOption]:
 def start_scan(request: Request, body: ScanRequest) -> dict[str, Any]:
     """Start searching. Returns immediately; watch /api/job for progress."""
     settings = _settings(request)
-    roots = [Path(r) for r in body.roots] if body.roots else settings.effective_scan_roots()
+    chosen = bool(body.roots)
+    roots = [Path(r) for r in body.roots] if chosen else settings.effective_scan_roots()
 
-    missing = [str(r) for r in roots if not r.exists()]
-    roots = [r for r in roots if r.exists()]
+    # A folder chooser makes it possible to submit a file, or something that
+    # was deleted between choosing it and pressing the button, so both are
+    # checked rather than only existence.
+    missing = [str(r) for r in roots if not r.is_dir()]
+    roots = [r for r in roots if r.is_dir()]
     if not roots:
         raise HTTPException(
             status_code=400,
@@ -187,6 +219,11 @@ def start_scan(request: Request, body: ScanRequest) -> dict[str, Any]:
                 + (", ".join(missing) or "(nothing was chosen)")
             ),
         )
+
+    if chosen:
+        from ..scan.browse import remember_folders
+
+        remember_folders(_conn(request), [str(r) for r in roots])
 
     def work(job) -> None:
         from ..db import connect
@@ -216,6 +253,7 @@ def start_scan(request: Request, body: ScanRequest) -> dict[str, Any]:
                 scan_run_id=result.scan_run_id,
                 roots=result.roots,
                 skipped_roots=missing,
+                covered_roots=result.covered_roots,
             )
         finally:
             conn.close()

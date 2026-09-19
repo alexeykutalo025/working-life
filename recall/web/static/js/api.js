@@ -58,6 +58,8 @@ export const api = {
 
   // --- sources ---
   scanTargets: () => request('/api/scan/targets'),
+  browseFolders: (path) =>
+    request('/api/folders' + (path ? `?path=${encodeURIComponent(path)}` : '')),
   startScan: (roots, fullHash = false) =>
     request('/api/scan', { method: 'POST', body: JSON.stringify({ roots, full_hash: fullHash }) }),
   job: () => request('/api/job'),
