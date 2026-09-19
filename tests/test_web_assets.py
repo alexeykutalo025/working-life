@@ -545,3 +545,75 @@ def test_clearing_a_filter_resets_the_page():
     for name in ("function clearFilter(", "function clearAllFilters("):
         body = source.split(name, 1)[1].split("\n}", 1)[0]
         assert "state.offset = 0" in body, f"{name} leaves the offset where it was"
+
+
+# ---------------------------------------------------------------------------
+# The search table's columns
+# ---------------------------------------------------------------------------
+
+
+def test_the_table_is_what_opens_first():
+    """The client asked for the table by default; a fallback that says 'cards'
+    would hand every first-time visitor the other view and look like a bug in
+    whatever remembered the choice."""
+    source = search_js()
+    body = source.split("function storedView() {", 1)[1].split("\n}", 1)[0]
+
+    assert body.count("'table'") == 2, (
+        "storedView must fall back to 'table' on both paths - the stored value "
+        "being unrecognised, and localStorage throwing"
+    )
+
+
+def test_the_columns_hidden_by_default_are_real_columns():
+    """A typo here hides nothing and says nothing. Nobody would ever find it.
+
+    The names are matched against the export column lists, which are the same
+    lists the table is built from.
+    """
+    from recall.export import rows as export_rows
+
+    source = search_js()
+    block = source.split("const HIDDEN_BY_DEFAULT = [", 1)[1].split("]", 1)[0]
+    names = re.findall(r"'([\w]+)'", block)
+
+    every_column = set()
+    for attr in dir(export_rows):
+        if attr.endswith("_COLUMNS"):
+            every_column |= set(getattr(export_rows, attr))
+
+    assert names, "no default-hidden columns found; the parser is wrong"
+    unknown = set(names) - every_column
+    assert unknown == set(), f"{sorted(unknown)} is not a column of any record"
+
+
+def test_each_remembered_choice_has_its_own_key():
+    """Two settings sharing a key means one of them silently wins."""
+    source = search_js()
+    keys = re.findall(r"^const \w+_KEY = '([^']+)';", source, re.MULTILINE)
+
+    assert len(keys) >= 3
+    assert len(set(keys)) == len(keys), f"duplicate storage keys: {keys}"
+    assert all(k.startswith("recall.") for k in keys), (
+        "storage is shared with whatever else is on this origin"
+    )
+
+
+def test_a_resizable_table_is_laid_out_so_a_width_is_a_width():
+    """Three CSS facts make or break column resizing, and each is easy to undo.
+
+    A table is `table-layout: auto` by default, where a browser reads a width
+    as a suggestion and sizes to the content instead. `width: 100%` fights
+    fixed pixel widths. And `white-space: nowrap` on a heading sets a floor no
+    drag can get under - "anything uncertain about this record" would hold a
+    column open on its own.
+    """
+    css = CSS.read_text(encoding="utf-8")
+    block = css.split(".table--columns {", 1)[1].split("}", 1)[0]
+
+    assert "table-layout: fixed" in block
+    assert "min-width: 100%" in block
+    assert "width: auto" in block
+
+    heading = css.split(".table--columns th {", 1)[1].split("}", 1)[0]
+    assert "white-space: normal" in heading

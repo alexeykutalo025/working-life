@@ -91,6 +91,30 @@ def test_a_row_on_screen_matches_the_row_in_the_workbook(client, settings, conn)
     assert on_screen == in_file
 
 
+def test_every_column_arrives_with_the_width_the_sheet_gives_it(client):
+    """The screen sizes its columns from the workbook's own measurements.
+
+    The alternative was a second tuned list in JavaScript, which would have
+    agreed with the spreadsheet on the day it was written and drifted from it
+    afterwards - and the person who would notice is the client, comparing the
+    two.
+    """
+    from recall.export.xlsx_export import column_width
+
+    body = client.get("/api/search/table").json()
+
+    assert set(body["widths"]) == set(body["columns"])
+    for column in body["columns"]:
+        assert body["widths"][column] == column_width(column)
+
+
+def test_a_column_of_long_text_is_wider_than_one_holding_a_date(client):
+    """Not a tautology: it is what makes the widths worth sending at all."""
+    body = client.get("/api/search/table", params={"kind": "message"}).json()
+
+    assert body["widths"]["subject"] > body["widths"]["date"]
+
+
 def test_the_kinds_present_are_reported_with_their_counts(client):
     body = client.get("/api/search/table").json()
 

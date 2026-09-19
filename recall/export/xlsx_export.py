@@ -184,6 +184,27 @@ def _cell(value):
     return text
 
 
+#: Columns wide enough to need saying so, in Excel's character units. The rest
+#: are sized from the length of their heading.
+_WIDE_COLUMNS = {
+    "subject": 46, "location": 28, "attendees": 52, "notes": 60,
+    "source_file": 46, "body_preview": 60, "data_quality": 44,
+    "recurrence_rule": 32, "emails": 36, "to": 40, "cc": 40,
+    "body": 60,
+}
+
+
+def column_width(column: str) -> int:
+    """How wide this column wants to be, in Excel's character units.
+
+    The table on the Search screen reads this too, converting to pixels, so a
+    column that is wide in the workbook is wide on the screen. Two tuned lists
+    would drift, and a client comparing the screen against the spreadsheet
+    would find the difference before we did.
+    """
+    return _WIDE_COLUMNS.get(column, max(12, min(26, len(_heading(column)) + 4)))
+
+
 def _write_records_sheet(
     sheet, columns, rows, Font, PatternFill, Alignment, get_column_letter
 ) -> int:
@@ -207,13 +228,7 @@ def _write_records_sheet(
         sheet.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{written + 1}"
 
     for i, column in enumerate(columns, start=1):
-        width = {
-            "subject": 46, "location": 28, "attendees": 52, "notes": 60,
-            "source_file": 46, "body_preview": 60, "data_quality": 44,
-            "recurrence_rule": 32, "emails": 36, "to": 40, "cc": 40,
-            "body": 60,
-        }.get(column, max(12, min(26, len(_heading(column)) + 4)))
-        sheet.column_dimensions[get_column_letter(i)].width = width
+        sheet.column_dimensions[get_column_letter(i)].width = column_width(column)
 
     return written
 

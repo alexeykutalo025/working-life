@@ -275,6 +275,7 @@ def search_table(
         "kinds": kinds,
         "columns": columns,
         "headings": {c: _heading_for(c) for c in columns},
+        "widths": {c: _width_for(c) for c in columns},
         "rows": rows,
         "offset": offset,
         "limit": limit,
@@ -292,6 +293,17 @@ def _heading_for(column: str) -> str:
     from ..export.xlsx_export import _heading
 
     return _heading(column)
+
+
+def _width_for(column: str) -> int:
+    """The same width as the spreadsheet's column, in Excel character units.
+
+    The screen converts to pixels. Sending it rather than keeping a second
+    tuned list in JavaScript means the two cannot drift apart.
+    """
+    from ..export.xlsx_export import column_width
+
+    return column_width(column)
 
 
 def _marks(values) -> str:

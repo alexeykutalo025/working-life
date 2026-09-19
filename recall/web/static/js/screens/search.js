@@ -10,6 +10,57 @@ import {
   num, pager, plural, setTitle, tag,
 } from '../ui.js';
 
+// --- what the user chose last time ----------------------------------------
+//
+// Kept in this browser, never uploaded - there is no network at runtime. Every
+// read is wrapped, because a private window can throw on the first touch of
+// localStorage and a search screen that will not open over a remembered
+// column width would be an absurd way to lose the archive.
+
+const VIEW_KEY = 'recall.searchView';
+const HIDDEN_KEY = 'recall.searchColumns';
+const WIDTH_KEY = 'recall.searchColumnWidths';
+
+const VIEWS = ['table', 'cards'];
+
+//: Columns switched off until somebody asks for them: an id the row already
+//: carries, a mail header nobody reads, and a flag that repeats the column
+//: beside it. Hidden columns are what gets stored, not shown ones, so a column
+//: added to the export later turns up on screen instead of staying invisible.
+const HIDDEN_BY_DEFAULT = ['item_id', 'message_id', 'timezone_known'];
+
+//: A spreadsheet measures a column in characters and a screen in pixels. The
+//: server sends the width the workbook uses; this turns it into one.
+const PX_PER_CHAR = 7.4;
+const MIN_COLUMN_PX = 72;
+const MAX_SEED_PX = 440;
+
+function storedView() {
+  try {
+    const stored = localStorage.getItem(VIEW_KEY);
+    return VIEWS.includes(stored) ? stored : 'table';
+  } catch {
+    return 'table';
+  }
+}
+
+function storedObject(key) {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(key) || '{}');
+    // Storage holds whatever was put there, including what an older version
+    // wrote and whatever a person types into a console.
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function remember(key, value) {
+  try {
+    localStorage.setItem(key, typeof value === 'string' ? value : JSON.stringify(value));
+  } catch { /* private window, or storage full */ }
+}
+
 const state = {
   q: '',
   kind: '',
@@ -26,11 +77,23 @@ const state = {
   pageSize: 50,
   selected: -1,
   results: [],
-  //: 'cards' reads well; 'table' is for working with the figures.
-  view: 'cards',
+  //: The table is what this archive is for - columns that sort and export -
+  //: so it opens first. Cards read better one at a time. Either way, whichever
+  //: was last used is what comes back.
+  view: storedView(),
   //: Which kind's table is showing, when the results hold more than one.
   table_kind: '',
+  //: Columns the user turned off, keyed by kind. See HIDDEN_BY_DEFAULT.
+  hidden: storedObject(HIDDEN_KEY),
+  //: Column widths in pixels, keyed by kind, where one has been dragged.
+  widths: storedObject(WIDTH_KEY),
 };
+
+/** The last table the server sent, so hiding a column costs no request. */
+let tableData = null;
+
+/** Whether the column panel is open, kept across redraws of the table. */
+let columnsOpen = false;
 
 /** The filter lists the server last sent, so a chip can name what it holds. */
 let filterData = null;
@@ -211,9 +274,15 @@ function installKeys() {
 }
 
 function move(delta) {
-  const next = Math.max(0, Math.min(state.results.length - 1, state.selected + delta));
+  // There is no .search-result in table view, so the arrow keys used to do
+  // nothing at all there - silently, which is the worst way for a key to fail.
+  const nodes = document.querySelectorAll(
+    state.view === 'table' ? '#search-table tbody tr' : '.search-result');
+  if (!nodes.length) return;
+
+  const next = Math.max(0, Math.min(nodes.length - 1, state.selected + delta));
   state.selected = next;
-  document.querySelectorAll('.search-result').forEach((node, i) => {
+  nodes.forEach((node, i) => {
     node.classList.toggle('is-selected', i === next);
     if (i === next) {
       node.scrollIntoView({ block: 'nearest' });
@@ -510,8 +579,12 @@ async function runSearch() {
       date_from: state.date_from,
       date_to: state.date_to,
       sort: state.sort,
-      limit: state.pageSize,
-      offset: state.offset,
+      // The table fetches its own rows from /api/search/table. This request is
+      // still needed for the count, the qualifiers and what the search box was
+      // understood to mean - none of which depend on the page size - so it is
+      // asked for one result rather than fifty snippets nobody will see.
+      limit: state.view === 'table' ? 1 : state.pageSize,
+      offset: state.view === 'table' ? 0 : state.offset,
     });
   } catch (err) {
     clear(host);
@@ -660,6 +733,8 @@ function viewSwitch() {
       if (state.view === view) return;
       state.view = view;
       state.offset = 0;
+      state.selected = -1;
+      remember(VIEW_KEY, view);
       runSearch();
     },
   }, label);
@@ -667,16 +742,15 @@ function viewSwitch() {
   return el('div', { class: 'row mb-3' },
     el('span', { class: 'muted' }, 'Show as'),
     el('div', { class: 'btn-row' },
-      button('cards', 'Readable list', 'One result at a time, with the matching words marked'),
       button('table', 'Table', 'Every column, as it appears in the spreadsheet'),
+      button('cards', 'Readable list', 'One result at a time, with the matching words marked'),
     ),
   );
 }
 
 async function drawTable(host) {
-  let data;
   try {
-    data = await api.searchTable({
+    tableData = await api.searchTable({
       q: state.q,
       kind: state.kind || state.table_kind,
       person_id: state.person_id,
@@ -695,6 +769,19 @@ async function drawTable(host) {
     host.append(errorNotice(err));
     return;
   }
+  renderTable(host);
+}
+
+/**
+ * Draw the table from what the server last sent.
+ *
+ * Separate from fetching it, because turning a column on or off changes
+ * nothing about which records match - asking the server again for the same
+ * rows would make a tick box feel like a page load.
+ */
+function renderTable(host) {
+  const data = tableData;
+  if (!data) return;
 
   clear(host);
 
@@ -731,26 +818,213 @@ async function drawTable(host) {
       el('a', { class: 'health__link', href: '#/problems' }, 'Why?')));
   }
 
-  const head = el('tr', {},
-    ...data.columns.map((c) => el('th', { class: 'nowrap' }, data.headings[c] || c)));
+  const kind = data.showing || '';
+  const shown = data.columns.filter((c) => !hiddenColumns(kind).has(c));
 
-  const body = el('tbody', {});
-  for (const row of data.rows) {
-    body.append(el('tr', {
-      class: 'is-clickable',
-      onclick: () => { window.location.hash = `#/item/${row.item_id}`; },
-    },
-      ...data.columns.map((c) => el('td', {}, cellText(row[c]))),
-    ));
+  host.append(columnPanel(host, data, kind, shown));
+
+  const head = el('tr', {});
+  for (const column of shown) {
+    const th = el('th', {}, data.headings[column] || column);
+    th.style.width = `${columnWidth(kind, column, data.widths[column])}px`;
+    th.append(widthGrip(th, kind, column, data));
+    head.append(th);
   }
 
+  const body = el('tbody', {});
+  data.rows.forEach((row) => {
+    const tr = el('tr', {
+      class: 'is-clickable',
+      tabindex: '0',
+      onclick: () => { window.location.hash = `#/item/${row.item_id}`; },
+      onkeydown: (e) => {
+        if (e.key === 'Enter') window.location.hash = `#/item/${row.item_id}`;
+      },
+    });
+    for (const column of shown) {
+      const text = cellText(row[column]);
+      // Fixed column widths mean a long value is clipped. The full text is on
+      // the record itself, one click away, and here on hover in the meantime.
+      tr.append(el('td', { title: text.length > 32 ? text : null }, text));
+    }
+    body.append(tr);
+  });
+
+  // The arrow keys walk these rows; Enter opens whichever one is on.
+  state.results = data.rows.map((r) => ({ id: r.item_id }));
+  state.selected = -1;
+
   host.append(
-    el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, head), body)),
+    el('div', { class: 'table-wrap' },
+      el('table', { class: 'table--columns' }, el('thead', {}, head), body)),
     el('p', { class: 'muted mt-3' },
       'These are the same columns you get in the spreadsheet. Click a row to ' +
-      'open the record.'),
+      'open the record, or drag the edge of a heading to change its width.'),
     resultsPager(data.total.value),
   );
+}
+
+// --- which columns, and how wide ------------------------------------------
+
+/** The columns this kind currently has switched off. */
+function hiddenColumns(kind) {
+  const stored = state.hidden[kind];
+  return new Set(Array.isArray(stored) ? stored : HIDDEN_BY_DEFAULT);
+}
+
+function setHiddenColumns(kind, columns) {
+  state.hidden[kind] = [...columns];
+  remember(HIDDEN_KEY, state.hidden);
+}
+
+/** A column's width in pixels: what was dragged, else what the sheet uses. */
+function columnWidth(kind, column, sheetWidth) {
+  const stored = (state.widths[kind] || {})[column];
+  if (Number.isFinite(stored) && stored >= MIN_COLUMN_PX) return Math.round(stored);
+  return seedWidth(sheetWidth);
+}
+
+function seedWidth(sheetWidth) {
+  const px = (Number(sheetWidth) || 16) * PX_PER_CHAR + 16;
+  return Math.round(Math.min(MAX_SEED_PX, Math.max(MIN_COLUMN_PX, px)));
+}
+
+function setColumnWidth(kind, column, px) {
+  if (!state.widths[kind]) state.widths[kind] = {};
+  state.widths[kind][column] = px;
+  remember(WIDTH_KEY, state.widths);
+}
+
+/**
+ * The control for showing and hiding columns.
+ *
+ * A calendar entry has twenty-two columns and several of them are long free
+ * text, so the table is unreadable until somebody can put the ones they do not
+ * want away. Nothing is hidden that is not listed here with its box unticked,
+ * and "Show every column" brings the lot back.
+ */
+function columnPanel(host, data, kind, shown) {
+  const hidden = hiddenColumns(kind);
+
+  const panel = el('details', { class: 'columns-panel', open: columnsOpen || null },
+    el('summary', {},
+      `Columns — showing ${num(shown.length)} of ${num(data.columns.length)}`));
+  panel.addEventListener('toggle', () => { columnsOpen = panel.open; });
+
+  const grid = el('div', { class: 'columns-panel__grid' });
+  for (const column of data.columns) {
+    const id = `column-${kind}-${column}`;
+    grid.append(el('label', { class: 'columns-panel__item', for: id },
+      el('input', {
+        type: 'checkbox',
+        id,
+        checked: !hidden.has(column),
+        onchange: (e) => {
+          // Only columns this kind actually has. The defaults name a few that
+          // belong to other kinds, and storing those would leave the list
+          // describing columns that are not there.
+          const next = new Set(
+            [...hiddenColumns(kind)].filter((c) => data.columns.includes(c)));
+          if (e.target.checked) next.delete(column); else next.add(column);
+
+          // A table with no columns is not a table, and the way back from one
+          // is not obvious. The last column stays.
+          if (!data.columns.some((c) => !next.has(c))) {
+            e.target.checked = true;
+            return;
+          }
+          setHiddenColumns(kind, next);
+          renderTable(host);
+        },
+      }),
+      el('span', {}, data.headings[column] || column)));
+  }
+
+  panel.append(
+    grid,
+    el('div', { class: 'btn-row mt-3' },
+      el('button', {
+        class: 'btn', type: 'button',
+        onclick: () => { setHiddenColumns(kind, []); renderTable(host); },
+      }, 'Show every column'),
+      el('button', {
+        class: 'btn', type: 'button',
+        title: 'Back to the columns and widths this screen started with',
+        onclick: () => {
+          delete state.hidden[kind];
+          delete state.widths[kind];
+          remember(HIDDEN_KEY, state.hidden);
+          remember(WIDTH_KEY, state.widths);
+          renderTable(host);
+        },
+      }, 'Reset the layout'),
+    ),
+  );
+
+  return panel;
+}
+
+/**
+ * The drag handle on the right edge of a heading.
+ *
+ * It is focusable and answers the arrow keys, because dragging a four-pixel
+ * strip is not something everybody can do - and the person this program is
+ * for is seventy-two.
+ */
+function widthGrip(th, kind, column, data) {
+  const heading = data.headings[column] || column;
+
+  const apply = (px) => {
+    const width = Math.max(MIN_COLUMN_PX, Math.round(px));
+    th.style.width = `${width}px`;
+    grip.setAttribute('aria-valuenow', String(width));
+    return width;
+  };
+
+  const grip = el('span', {
+    class: 'col-grip',
+    role: 'separator',
+    'aria-orientation': 'vertical',
+    tabindex: '0',
+    'aria-label': `Width of the ${heading} column`,
+    'aria-valuenow': String(parseInt(th.style.width, 10) || 0),
+    title: 'Drag, or use the left and right arrow keys',
+    onclick: (e) => e.stopPropagation(),
+    onpointerdown: (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const startX = e.clientX;
+      const startWidth = th.getBoundingClientRect().width;
+      grip.setPointerCapture(e.pointerId);
+      grip.classList.add('is-dragging');
+
+      const onMove = (ev) => apply(startWidth + ev.clientX - startX);
+      const onDone = () => {
+        grip.removeEventListener('pointermove', onMove);
+        grip.removeEventListener('pointerup', onDone);
+        grip.removeEventListener('pointercancel', onDone);
+        grip.classList.remove('is-dragging');
+        setColumnWidth(kind, column, parseInt(th.style.width, 10));
+      };
+      grip.addEventListener('pointermove', onMove);
+      grip.addEventListener('pointerup', onDone);
+      grip.addEventListener('pointercancel', onDone);
+    },
+    onkeydown: (e) => {
+      const step = e.shiftKey ? 48 : 16;
+      const now = parseInt(th.style.width, 10) || th.getBoundingClientRect().width;
+      let next;
+      if (e.key === 'ArrowLeft') next = now - step;
+      else if (e.key === 'ArrowRight') next = now + step;
+      else if (e.key === 'Home') next = seedWidth(data.widths[column]);
+      else return;
+      e.preventDefault();
+      e.stopPropagation();
+      setColumnWidth(kind, column, apply(next));
+    },
+  });
+
+  return grip;
 }
 
 function cellText(value) {

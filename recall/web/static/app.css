@@ -466,6 +466,49 @@ tbody tr.is-selected { background: var(--accent-soft); box-shadow: inset 4px 0 0
 
 td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
+/* A table whose columns can be hidden and dragged wider.
+   Three things have to change together for a width to mean anything:
+   `table-layout` is `auto` by default, where a browser treats a width as a
+   suggestion and sizes to the content instead; `width: 100%` fights fixed
+   pixel widths, so it becomes a minimum and .table-wrap's overflow takes
+   over; and `white-space: nowrap` on a heading sets a floor no drag can get
+   under, so headings here wrap instead. */
+.table--columns { table-layout: fixed; width: auto; min-width: 100%; }
+.table--columns th {
+  white-space: normal; overflow: hidden;
+  padding-right: var(--sp-5);
+}
+.table--columns td {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.col-grip {
+  position: absolute; top: 0; right: 0; bottom: 0; width: 14px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: col-resize;
+  /* Without this a drag on a touch screen scrolls the page instead. */
+  touch-action: none;
+}
+.col-grip::before {
+  content: ""; width: 2px; height: 55%;
+  background: var(--border-strong); border-radius: 1px;
+}
+.col-grip:hover::before,
+.col-grip.is-dragging::before { background: var(--accent); width: 3px; height: 100%; }
+.col-grip:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+
+.columns-panel { background: var(--surface); }
+.columns-panel > summary { min-height: var(--tap); display: flex; align-items: center; }
+.columns-panel__grid {
+  display: grid; gap: var(--sp-2) var(--sp-4);
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+}
+.columns-panel__item {
+  display: flex; align-items: center; gap: var(--sp-3);
+  min-height: var(--tap); cursor: pointer;
+}
+.columns-panel__item input { flex: none; }
+
 .cell-name { font-weight: 600; word-break: break-word; }
 .cell-path { color: var(--text-muted); font-size: var(--size-small); word-break: break-all; }
 
