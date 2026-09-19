@@ -25,7 +25,15 @@ const state = {
   offset: 0,
   selected: -1,
   results: [],
+  //: 'cards' reads well; 'table' is for working with the figures.
+  view: 'cards',
+  //: Which kind's table is showing, when the results hold more than one.
+  table_kind: '',
 };
+
+//: How many results a page holds, in either view.
+const PAGE = 50;
+const TABLE_PAGE = 50;
 
 let keyHandler = null;
 
@@ -300,7 +308,7 @@ async function runSearch() {
       date_from: state.date_from,
       date_to: state.date_to,
       sort: state.sort,
-      limit: 50,
+      limit: PAGE,
       offset: state.offset,
     });
   } catch (err) {
@@ -348,28 +356,175 @@ async function runSearch() {
     return;
   }
 
+  host.append(viewSwitch());
   host.append(exportBar(total.value));
+
+  if (state.view === 'table') {
+    const table = el('div', { id: 'search-table' }, loading('Building the table'));
+    host.append(table);
+    drawTable(table);
+    return;
+  }
 
   const list = el('div', { class: 'stack' });
   data.results.forEach((result, index) => list.append(resultCard(result, index)));
   host.append(list);
 
-  if (total.value > state.offset + data.results.length) {
-    host.append(el('div', { class: 'btn-row' },
-      state.offset > 0
-        ? el('button', {
-            class: 'btn', type: 'button',
-            onclick: () => { state.offset = Math.max(0, state.offset - 50); runSearch(); },
-          }, 'Previous 50')
-        : null,
-      el('button', {
-        class: 'btn btn--primary', type: 'button',
-        onclick: () => { state.offset += 50; runSearch(); },
-      }, 'Next 50'),
-      el('span', { class: 'muted' },
-        `Showing ${num(state.offset + 1)} to ${num(state.offset + data.results.length)} of ${num(total.value)}`),
+  host.append(pager(total.value, data.results.length, (offset) => {
+    state.offset = offset;
+    runSearch();
+  }));
+}
+
+/**
+ * Previous / Next, and where you are.
+ *
+ * The whole block used to be conditional on there being a next page, so on the
+ * last page "Previous" disappeared too and the only way back was to run the
+ * search again.
+ */
+function pager(total, shown, go) {
+  if (total <= shown && state.offset === 0) return null;
+
+  const from = state.offset + 1;
+  const to = state.offset + shown;
+
+  return el('div', { class: 'btn-row mt-4' },
+    state.offset > 0
+      ? el('button', {
+          class: 'btn', type: 'button',
+          onclick: () => go(Math.max(0, state.offset - PAGE)),
+        }, `Previous ${PAGE}`)
+      : null,
+    to < total
+      ? el('button', {
+          class: 'btn btn--primary', type: 'button',
+          onclick: () => go(state.offset + PAGE),
+        }, `Next ${PAGE}`)
+      : null,
+    el('span', { class: 'muted' },
+      `Showing ${num(from)} to ${num(to)} of ${num(total)}`),
+  );
+}
+
+// --- the same results as a table ------------------------------------------
+//
+// Built from the export columns, so what is on the screen is what is in the
+// spreadsheet. A client checking one against the other should never find a
+// difference - that is the point of having both.
+
+function viewSwitch() {
+  const button = (view, label, hint) => el('button', {
+    class: `btn ${state.view === view ? 'btn--primary' : ''}`,
+    type: 'button',
+    'aria-pressed': state.view === view ? 'true' : 'false',
+    title: hint,
+    onclick: () => {
+      if (state.view === view) return;
+      state.view = view;
+      state.offset = 0;
+      runSearch();
+    },
+  }, label);
+
+  return el('div', { class: 'row mb-3' },
+    el('span', { class: 'muted' }, 'Show as'),
+    el('div', { class: 'btn-row' },
+      button('cards', 'Readable list', 'One result at a time, with the matching words marked'),
+      button('table', 'Table', 'Every column, as it appears in the spreadsheet'),
+    ),
+  );
+}
+
+async function drawTable(host) {
+  let data;
+  try {
+    data = await api.searchTable({
+      q: state.q,
+      kind: state.kind || state.table_kind,
+      person_id: state.person_id,
+      source_id: state.source_id,
+      folder_id: state.folder_id,
+      tag: state.tag,
+      has_attachments: state.has_attachments,
+      undated: state.undated ? '1' : '',
+      date_from: state.date_from,
+      date_to: state.date_to,
+      limit: TABLE_PAGE,
+      offset: state.offset,
+    });
+  } catch (err) {
+    clear(host);
+    host.append(errorNotice(err));
+    return;
+  }
+
+  clear(host);
+
+  if (!data.rows.length) {
+    host.append(empty('Nothing to put in a table',
+      'These results have no rows that can be laid out in columns yet.'));
+    return;
+  }
+
+  // More than one kind of record needs more than one table: a calendar entry
+  // and a contact share almost no columns.
+  if (data.kinds.length > 1) {
+    const row = el('div', { class: 'row mb-3' },
+      el('span', { class: 'muted' }, 'Which records'));
+    for (const k of data.kinds) {
+      row.append(el('button', {
+        class: `btn ${k.kind === data.showing ? 'btn--primary' : ''}`,
+        type: 'button',
+        'aria-pressed': k.kind === data.showing ? 'true' : 'false',
+        onclick: () => {
+          state.table_kind = k.kind;
+          state.offset = 0;
+          runSearch();
+        },
+      }, `${k.label} (${num(k.count)})`));
+    }
+    host.append(row);
+  }
+
+  if (data.total.qualified) {
+    const notes = (data.total.qualifiers || []).map((q) => q.text);
+    host.append(el('p', { class: 'qualified-note' },
+      `${notes.join(' · ')} `,
+      el('a', { class: 'health__link', href: '#/problems' }, 'Why?')));
+  }
+
+  const head = el('tr', {},
+    ...data.columns.map((c) => el('th', { class: 'nowrap' }, data.headings[c] || c)));
+
+  const body = el('tbody', {});
+  for (const row of data.rows) {
+    body.append(el('tr', {
+      class: 'is-clickable',
+      onclick: () => { window.location.hash = `#/item/${row.item_id}`; },
+    },
+      ...data.columns.map((c) => el('td', {}, cellText(row[c]))),
     ));
   }
+
+  host.append(
+    el('div', { class: 'table-wrap' }, el('table', {}, el('thead', {}, head), body)),
+    el('p', { class: 'muted mt-3' },
+      'These are the same columns you get in the spreadsheet. Click a row to ' +
+      'open the record.'),
+    pager(data.total.value, data.rows.length, (offset) => {
+      state.offset = offset;
+      runSearch();
+    }),
+  );
+}
+
+function cellText(value) {
+  if (value === null || value === undefined) return '';
+  const text = String(value);
+  // A whole mail body in one cell makes every row unreadable; the record
+  // itself is one click away.
+  return text.length > 300 ? `${text.slice(0, 300)}…` : text;
 }
 
 // --- saving what is on screen ---------------------------------------------
@@ -427,8 +582,21 @@ function exportBar(total) {
     }
   };
 
-  return el('details', { class: 'mb-3' },
-    el('summary', {}, `Save these ${num(total)} results to a file`),
+  // The obvious action, on its own, outside the disclosure: one workbook
+  // holding every kind of record, with the Integrity sheet in front of it.
+  const downloadRow = el('div', { class: 'row mb-3' },
+    el('a', {
+      class: 'btn btn--primary',
+      href: api.exportDownloadUrl(exportParams()),
+      download: '',
+    }, `Download these ${num(total)} results as Excel`),
+    el('span', { class: 'muted' },
+      'One workbook, a sheet for each kind of record, and a sheet saying what '
+      + 'is missing from it.'),
+  );
+
+  const more = el('details', { class: 'mb-3' },
+    el('summary', {}, 'Other ways to save these results'),
     el('p', {},
       'Saves exactly what is listed below, with a plain-language note of what ' +
       'is missing or uncertain in this particular set of records. That note is ' +
@@ -450,6 +618,24 @@ function exportBar(total) {
     ),
     status,
   );
+
+  return el('div', {}, downloadRow, more);
+}
+
+/** The current filters, in the shape both export routes expect. */
+function exportParams() {
+  return {
+    q: state.q,
+    kind: state.kind || state.table_kind || null,
+    person_id: state.person_id || null,
+    source_id: state.source_id || null,
+    folder_id: state.folder_id || null,
+    tag: state.tag || null,
+    has_attachments: state.has_attachments ? true : null,
+    undated: state.undated,
+    date_from: state.date_from || null,
+    date_to: state.date_to || null,
+  };
 }
 
 function resultCard(result, index) {

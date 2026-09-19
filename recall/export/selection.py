@@ -24,17 +24,36 @@ from .rows import (
     CALENDAR_EXTRA_COLUMNS,
     CONTACT_COLUMNS,
     MESSAGE_COLUMNS,
+    NOTE_COLUMNS,
+    TASK_COLUMNS,
     calendar_rows,
     contact_rows,
     message_rows,
+    note_rows,
+    task_rows,
 )
 
 log = get_logger("export.selection")
 
+#: Every kind an item can be. Tasks and notes were missing here for a long
+#: while, so they counted towards the total on screen and then quietly failed
+#: to appear in the file - exactly the kind of silent omission spec 9.6 calls a
+#: defect rather than a nicety.
 _ROWS_FOR_KIND = {
     "event": (calendar_rows, CALENDAR_COLUMNS + CALENDAR_EXTRA_COLUMNS),
     "message": (message_rows, MESSAGE_COLUMNS),
     "contact": (contact_rows, CONTACT_COLUMNS),
+    "task": (task_rows, TASK_COLUMNS),
+    "note": (note_rows, NOTE_COLUMNS),
+}
+
+#: What each kind is called on a sheet tab and in a filename.
+KIND_SHEET_NAMES = {
+    "message": "Messages",
+    "event": "Calendar",
+    "contact": "Contacts",
+    "task": "Tasks",
+    "note": "Notes",
 }
 
 
@@ -82,16 +101,39 @@ def export_search(
         )
     ]
 
-    # One export per kind, because a calendar entry and a contact do not share
-    # a set of columns and forcing them into one would give a table that is
-    # mostly empty cells.
+    # One file per kind, because a calendar entry and a contact do not share a
+    # set of columns and forcing them into one table would be mostly empty
+    # cells. Excel is the exception: a workbook holds a sheet per kind, so the
+    # user gets one file to open and the integrity statement cannot be
+    # separated from the data it describes.
     written: list[dict[str, Any]] = []
+    unexportable: list[dict[str, Any]] = []
     stamp = datetime.now().strftime("%Y-%m-%d")
     base = Path(out_path) if out_path else settings.exports_path / f"recall-search-{stamp}"
+
+    if fmt == "xlsx":
+        return _combined_workbook(
+            conn, settings, base, item_ids, kinds_present,
+            query=query, person_id=person_id, source_id=source_id,
+            folder_id=folder_id, tag=tag, has_attachments=has_attachments,
+            undated=undated, date_from=date_from, date_to=date_to,
+            copy_attachments=copy_attachments,
+        )
 
     for item_kind in sorted(kinds_present):
         spec = _ROWS_FOR_KIND.get(item_kind)
         if spec is None:
+            # A kind nobody has written columns for. It must not simply vanish
+            # between the count on screen and the rows in the file, so it is
+            # counted and named in the result.
+            missed = conn.execute(
+                f"SELECT COUNT(*) AS n FROM items "
+                f"WHERE kind = ? AND id IN ({_marks(item_ids)})",
+                (item_kind, *item_ids),
+            ).fetchone()["n"]
+            log.warning("no export columns for kind %r; %d record(s) reported "
+                        "rather than dropped", item_kind, missed)
+            unexportable.append({"kind": item_kind, "count": int(missed)})
             continue
         row_fn, columns = spec
 
@@ -146,6 +188,9 @@ def export_search(
         "folder": str(base.parent),
         "total_records": sum(w["count"] for w in written),
     }
+    if unexportable:
+        result["left_out"] = unexportable
+        result["left_out_total"] = sum(u["count"] for u in unexportable)
 
     if copy_attachments:
         result["attachments"] = copy_attachments_out(
@@ -153,6 +198,124 @@ def export_search(
         )
 
     return result
+
+
+def _combined_workbook(
+    conn, settings, base: Path, item_ids: list[int], kinds_present: list[str],
+    *, query, person_id, source_id, folder_id, tag, has_attachments, undated,
+    date_from, date_to, copy_attachments,
+) -> dict[str, Any]:
+    """Every kind in one workbook: Integrity first, then a sheet per kind.
+
+    The count guarantee is the same one ``Exporter.write`` makes and matters
+    more here, not less: a workbook that says it holds 12,481 records must have
+    12,481 rows across its sheets, or the user is better off being told nothing
+    was written.
+    """
+    from ..scan.onedrive import assert_not_onedrive
+    from .base import build_statement
+    from .xlsx_export import write_combined_workbook
+
+    sections: list[tuple[str, list[str], list[dict]]] = []
+    per_kind: list[dict[str, Any]] = []
+    unexportable: list[dict[str, Any]] = []
+    all_ids: list[int] = []
+
+    for item_kind in sorted(kinds_present, key=_sheet_order):
+        ids_of_kind = [
+            int(r["id"])
+            for r in conn.execute(
+                f"SELECT id FROM items WHERE kind = ? AND id IN ({_marks(item_ids)})",
+                (item_kind, *item_ids),
+            )
+        ]
+        if not ids_of_kind:
+            continue
+
+        spec = _ROWS_FOR_KIND.get(item_kind)
+        if spec is None:
+            log.warning("no export columns for kind %r; %d record(s) reported "
+                        "rather than dropped", item_kind, len(ids_of_kind))
+            unexportable.append({"kind": item_kind, "count": len(ids_of_kind)})
+            continue
+
+        row_fn, columns = spec
+        rows = list(row_fn(
+            conn, where=f"i.id IN ({_marks(ids_of_kind)})", params=ids_of_kind
+        ))
+        sections.append((KIND_SHEET_NAMES.get(item_kind, item_kind), columns, rows))
+        all_ids.extend(int(r["id"]) for r in rows if r.get("id") is not None)
+        per_kind.append({
+            "kind": item_kind,
+            "sheet": KIND_SHEET_NAMES.get(item_kind, item_kind),
+            "count": len(rows),
+        })
+
+    if not sections:
+        raise ExportError(
+            "Nothing in that result can be written to a spreadsheet yet. "
+            "The Problems screen says what Recall found instead."
+        )
+
+    selection = ExportSelection(
+        description=_describe(
+            query=query, kind=None, person_id=person_id, source_id=source_id,
+            folder_id=folder_id, tag=tag, has_attachments=has_attachments,
+            undated=undated, date_from=date_from, date_to=date_to,
+            count=len(all_ids), conn=conn,
+        ),
+        kinds=[k["kind"] for k in per_kind],
+        query=query or None,
+        source_ids=[source_id] if source_id else [],
+        period_start=date_from[:7] if date_from else None,
+        period_end=date_to[:7] if date_to else None,
+        item_ids=all_ids,
+    )
+
+    target = base.with_suffix(".xlsx")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    assert_not_onedrive(target.parent)
+
+    statement = build_statement(conn, selection, len(all_ids), settings.db_path)
+    total = write_combined_workbook(sections, target, statement)
+
+    if total != len(all_ids):
+        raise ExportError(
+            f"The export wrote {total:,} rows but {len(all_ids):,} were "
+            "selected. Rather than hand you a file whose count cannot be "
+            "trusted, Recall has stopped."
+        )
+
+    result: dict[str, Any] = {
+        "files": [{
+            "kind": "all",
+            "file": str(target),
+            "integrity_file": None,       # the Integrity sheet is inside it
+            "count": statement.exported_count,
+            "estimated_missing": statement.estimated_missing,
+            "is_complete": statement.is_clean,
+            "sheets": per_kind,
+        }],
+        "folder": str(target.parent),
+        "total_records": statement.exported_count,
+    }
+    if unexportable:
+        result["left_out"] = unexportable
+        result["left_out_total"] = sum(u["count"] for u in unexportable)
+
+    if copy_attachments:
+        result["attachments"] = copy_attachments_out(
+            conn, settings, item_ids, target.parent / f"{target.stem}-attachments"
+        )
+
+    log.info("Exported %d records to %s", total, target)
+    return result
+
+
+def _sheet_order(kind: str) -> int:
+    """Sheets in the order somebody would look for them, not alphabetical."""
+    order = ["message", "event", "contact", "task", "note"]
+    return order.index(kind) if kind in order else len(order)
 
 
 def _matching_ids(conn, *, query, kind, person_id, source_id, folder_id, tag,
@@ -223,6 +386,9 @@ def _describe(*, query, kind, person_id, source_id, folder_id, tag,
     """What this export covers, in words, for the integrity statement."""
     kind_word = {
         "event": "calendar entries", "message": "messages", "contact": "contacts",
+        "task": "tasks", "note": "notes",
+        # No kind at all means a workbook holding every kind at once.
+        None: "records",
     }.get(kind, kind)
 
     parts = [f"{count:,} {kind_word}"]

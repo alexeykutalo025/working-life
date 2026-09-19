@@ -48,6 +48,22 @@ CONTACT_COLUMNS = [
     "first_seen", "last_seen", "item_count", "source_file", "item_id",
 ]
 
+# Outlook tasks and sticky notes. They have no columns of their own in the
+# schema - the parsers map them onto the shared item fields - so these say
+# plainly what is actually known about them rather than inventing structure
+# that is not there. They used to be left out of every export while still
+# counting in the totals on screen, which is the one thing this program is not
+# allowed to do.
+TASK_COLUMNS = [
+    "date", "due_date", "subject", "body", "importance", "folder",
+    "source_file", "data_quality", "item_id",
+]
+
+NOTE_COLUMNS = [
+    "date", "subject", "body", "folder", "source_file", "data_quality",
+    "item_id",
+]
+
 
 def _parse(utc: str | None) -> datetime | None:
     if not utc:
@@ -221,6 +237,58 @@ def contact_rows(conn, *, where: str = "", params: list | None = None) -> Iterat
             "last_seen": "",
             "item_count": "",
             "source_file": row["source_files"] or "",
+        }
+
+
+def _simple_rows(conn, kind: str, *, where: str = "", params: list | None = None):
+    """The shared query behind tasks and notes.
+
+    Neither has a shape of its own in the schema, so both come out of the same
+    columns; what differs is which of them is worth a spreadsheet column.
+    """
+    sql = f"""
+        SELECT i.*,
+               (SELECT GROUP_CONCAT(sf.path, ' | ')
+                  FROM item_sources isrc
+                  JOIN source_files sf ON sf.id = isrc.source_file_id
+                 WHERE isrc.item_id = i.id) AS source_files,
+               (SELECT f.path FROM folders f WHERE f.id = i.folder_id) AS folder_path
+        FROM items i
+        WHERE i.kind = ? {('AND ' + where) if where else ''}
+        ORDER BY i.occurred_utc IS NULL, i.occurred_utc, i.id
+    """
+    return conn.execute(sql, [kind, *(params or [])])
+
+
+def task_rows(conn, *, where: str = "", params: list | None = None) -> Iterator[dict]:
+    """Outlook tasks. ``end_utc`` is where the parsers put the due date."""
+    for row in _simple_rows(conn, "task", where=where, params=params):
+        yield {
+            "id": int(row["id"]),
+            "item_id": int(row["id"]),
+            "date": _date(row["occurred_utc"]),
+            "due_date": _date(row["end_utc"]),
+            "subject": row["subject"] or "",
+            "body": _preview(row["body_text"], 2000),
+            "importance": row["importance"] or "",
+            "folder": row["folder_path"] or "",
+            "source_file": row["source_files"] or "",
+            "data_quality": _quality_note(conn, int(row["id"]), row),
+        }
+
+
+def note_rows(conn, *, where: str = "", params: list | None = None) -> Iterator[dict]:
+    """Outlook sticky notes. A note is a date and some text; that is all."""
+    for row in _simple_rows(conn, "note", where=where, params=params):
+        yield {
+            "id": int(row["id"]),
+            "item_id": int(row["id"]),
+            "date": _date(row["occurred_utc"]),
+            "subject": row["subject"] or "",
+            "body": _preview(row["body_text"], 2000),
+            "folder": row["folder_path"] or "",
+            "source_file": row["source_files"] or "",
+            "data_quality": _quality_note(conn, int(row["id"]), row),
         }
 
 

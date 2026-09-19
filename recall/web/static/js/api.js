@@ -114,6 +114,24 @@ export const api = {
     return request('/api/search' + (q ? `?${q}` : ''));
   },
   searchFilters: () => request('/api/search/filters'),
+  searchTable: (params = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '' && v !== false) qs.set(k, v);
+    });
+    const q = qs.toString();
+    return request('/api/search/table' + (q ? `?${q}` : ''));
+  },
+
+  /** A download link, not a fetch: the browser saves the file itself. */
+  exportDownloadUrl: (params = {}) => {
+    const qs = new URLSearchParams();
+    Object.entries(params).forEach(([k, v]) => {
+      if (v !== undefined && v !== null && v !== '' && v !== false) qs.set(k, v);
+    });
+    const q = qs.toString();
+    return '/api/export/search/download' + (q ? `?${q}` : '');
+  },
   item: (id) => request(`/api/items/${id}`),
   indexHealth: () => request('/api/index/health'),
   buildIndex: (rebuild = false) =>

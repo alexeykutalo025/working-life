@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from ..logging_setup import get_logger
@@ -462,6 +463,42 @@ def export_formats() -> dict[str, Any]:
     }
 
 
+def _confined_out_path(raw: str | None, settings) -> str | None:
+    """Keep a requested filename inside the exports folder.
+
+    The browser could ask the server to write anywhere on the disk, guarded
+    only by the OneDrive check. Nothing in the interface does that, but a local
+    server is still a server, and "write this file here" is not a decision a
+    web page gets to make about somebody's whole computer.
+    """
+    if not raw:
+        return None
+
+    exports = Path(settings.exports_path).resolve()
+    asked = Path(raw)
+
+    # A bare filename means "call it this"; anything with a folder in it is
+    # asking for a location, and that is refused rather than quietly redirected
+    # - a file that turns up somewhere other than where it was asked for is a
+    # worse surprise than being told no.
+    if asked.parent != Path("."):
+        try:
+            where = asked.parent.resolve()
+        except OSError:
+            where = asked.parent
+        if where != exports:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "Exports are written to Recall's own exports folder, so "
+                    "that nothing is scattered around your computer. "
+                    f"That folder is: {exports}"
+                ),
+            )
+
+    return str(exports / asked.name)
+
+
 @router.post("/export")
 def export(request: Request, body: ExportRequest) -> dict[str, Any]:
     from ..export import ExportError, run_export
@@ -475,7 +512,7 @@ def export(request: Request, body: ExportRequest) -> dict[str, Any]:
             settings,
             fmt=body.format,
             kind=body.kind,
-            out_path=body.out_path,
+            out_path=_confined_out_path(body.out_path, _settings(request)),
             full=body.full,
         )
     except ExportError as exc:
@@ -518,7 +555,7 @@ def export_search_results(request: Request, body: SearchExportRequest) -> dict[s
             undated=body.undated,
             date_from=body.date_from,
             date_to=body.date_to,
-            out_path=body.out_path,
+            out_path=_confined_out_path(body.out_path, _settings(request)),
             copy_attachments=body.copy_attachments,
         )
     except ExportError as exc:
@@ -528,13 +565,95 @@ def export_search_results(request: Request, body: SearchExportRequest) -> dict[s
             status_code=400, detail=f"The file could not be written: {exc}"
         ) from exc
 
+    result["message"] = _export_message(result)
+    return result
+
+
+def _export_message(result: dict[str, Any]) -> str:
+    """What to say about a finished export, including what is not in it."""
     incomplete = [f for f in result["files"] if not f["is_complete"]]
-    result["message"] = (
+    message = (
         f"Saved {result['total_records']:,} record(s) to "
         f"{len(result['files'])} file(s)."
-        + (
-            " Some of them are not complete - the note beside each one says why."
-            if incomplete else ""
-        )
     )
-    return result
+    if incomplete:
+        message += " Some of them are not complete - the note beside each one says why."
+    if result.get("left_out_total"):
+        kinds = ", ".join(f"{u['count']:,} {u['kind']}" for u in result["left_out"])
+        message += (
+            f" {result['left_out_total']:,} record(s) could not be written to this "
+            f"kind of file ({kinds}) and are NOT included in the count above."
+        )
+    return message
+
+
+@router.get("/export/search/download")
+def download_search_results(
+    request: Request,
+    format: str = "xlsx",
+    q: str = "",
+    kind: str | None = None,
+    person_id: int | None = None,
+    source_id: int | None = None,
+    folder_id: int | None = None,
+    tag: str | None = None,
+    has_attachments: bool | None = None,
+    undated: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
+) -> FileResponse:
+    """The same export, handed straight to the browser.
+
+    A GET, because that is what an ordinary download link is, and a link is
+    what somebody expects to click. The file is still written into the exports
+    folder on the way past, so nothing is lost if the download is cancelled or
+    the user wants it again later.
+
+    Formats that produce one file per kind give back the first; Excel gives one
+    workbook holding every kind, which is why it is the default here.
+    """
+    from ..export import ExportError
+    from ..export.selection import export_search
+
+    try:
+        result = export_search(
+            _conn(request), _settings(request),
+            fmt=format, query=q, kind=kind, person_id=person_id,
+            source_id=source_id, folder_id=folder_id, tag=tag,
+            has_attachments=has_attachments, undated=undated,
+            date_from=date_from, date_to=date_to,
+        )
+    except ExportError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"The file could not be written: {exc}"
+        ) from exc
+
+    path = Path(result["files"][0]["file"])
+    if not path.exists():  # pragma: no cover - the writer would have raised
+        raise HTTPException(status_code=500, detail="The file was not written.")
+
+    return FileResponse(
+        path,
+        filename=path.name,
+        media_type=_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream"),
+        headers={
+            # So a browser saves it rather than trying to display it.
+            "Content-Disposition": f'attachment; filename="{path.name}"',
+            # What is missing from the file, for anyone reading the response
+            # rather than opening the workbook. The Integrity sheet is inside.
+            "X-Recall-Records": str(result["total_records"]),
+            "X-Recall-Complete": "yes" if all(
+                f["is_complete"] for f in result["files"]
+            ) else "no",
+        },
+    )
+
+
+_MEDIA_TYPES = {
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".csv": "text/csv",
+    ".json": "application/json",
+    ".md": "text/markdown",
+}

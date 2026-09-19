@@ -175,6 +175,129 @@ def search(
     }
 
 
+#: A table cannot be allowed to become a way to pull the whole archive into a
+#: browser tab a row at a time. Beyond this, use the download.
+TABLE_MAX = 500
+
+
+@router.get("/search/table")
+def search_table(
+    request: Request,
+    q: str = "",
+    kind: str | None = None,
+    person_id: int | None = None,
+    source_id: int | None = None,
+    folder_id: int | None = None,
+    tag: str | None = None,
+    has_attachments: bool | None = None,
+    undated: bool = False,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """The same results as a table, with the columns the spreadsheet uses.
+
+    Deliberately built from the export row builders rather than from the search
+    payload. Somebody comparing what is on the screen with what is in the
+    workbook should never find a difference - that is the whole point of a
+    table view for a client who wants to analyse this.
+
+    Each kind has its own columns, because a calendar entry and a contact share
+    almost none, so one kind is returned at a time.
+    """
+    from ..export.selection import _ROWS_FOR_KIND, KIND_SHEET_NAMES, _matching_ids
+    from ..integrity.honest import qualifiers_for
+
+    conn = _conn(request)
+    limit = max(1, min(int(limit), TABLE_MAX))
+    offset = max(0, int(offset))
+
+    item_ids = _matching_ids(
+        conn, query=q, kind=kind, person_id=person_id, source_id=source_id,
+        folder_id=folder_id, tag=tag, has_attachments=has_attachments,
+        undated=undated, date_from=date_from, date_to=date_to, limit=100_000,
+    )
+
+    counts: dict[str, int] = {}
+    if item_ids:
+        counts = {
+            r["kind"]: int(r["n"])
+            for r in conn.execute(
+                f"SELECT kind, COUNT(*) AS n FROM items "
+                f"WHERE id IN ({_marks(item_ids)}) GROUP BY kind",
+                item_ids,
+            )
+        }
+
+    kinds = [
+        {
+            "kind": k,
+            "label": KIND_SHEET_NAMES.get(k, k),
+            "count": counts[k],
+            "can_table": k in _ROWS_FOR_KIND,
+        }
+        for k in sorted(counts, key=lambda k: -counts[k])
+    ]
+
+    # Which kind's table to show: the one asked for, else the biggest.
+    showing = kind if kind in counts else (kinds[0]["kind"] if kinds else None)
+
+    columns: list[str] = []
+    rows: list[dict[str, Any]] = []
+    total_of_kind = counts.get(showing, 0)
+
+    if showing and showing in _ROWS_FOR_KIND:
+        row_fn, columns = _ROWS_FOR_KIND[showing]
+        page_ids = [
+            int(r["id"])
+            for r in conn.execute(
+                f"SELECT id FROM items WHERE kind = ? AND id IN ({_marks(item_ids)}) "
+                "ORDER BY occurred_utc IS NULL, occurred_utc, id LIMIT ? OFFSET ?",
+                (showing, *item_ids, limit, offset),
+            )
+        ]
+        if page_ids:
+            rows = list(row_fn(
+                conn, where=f"i.id IN ({_marks(page_ids)})", params=page_ids
+            ))
+
+    qualifiers = qualifiers_for(
+        conn,
+        kinds=[showing] if showing else None,
+        source_ids=[source_id] if source_id else [],
+        period_start=date_from[:7] if date_from else None,
+        period_end=date_to[:7] if date_to else None,
+    )
+
+    return {
+        "showing": showing,
+        "kinds": kinds,
+        "columns": columns,
+        "headings": {c: _heading_for(c) for c in columns},
+        "rows": rows,
+        "offset": offset,
+        "limit": limit,
+        "total": {
+            "value": total_of_kind,
+            "qualified": bool(qualifiers),
+            "qualifiers": [q.as_dict() for q in qualifiers],
+        },
+        "matched_total": len(item_ids),
+    }
+
+
+def _heading_for(column: str) -> str:
+    """The same wording as the spreadsheet's header row."""
+    from ..export.xlsx_export import _heading
+
+    return _heading(column)
+
+
+def _marks(values) -> str:
+    return ",".join("?" for _ in values)
+
+
 def _result_row(conn, row) -> dict[str, Any]:
     people = [
         f"{r['display_name'] or r['raw_display_name'] or r['address']}"

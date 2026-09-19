@@ -632,22 +632,30 @@ function exportPanel() {
     el('h2', { class: 'card__title mt-0' }, 'Save the calendar to a file'),
     el('p', {},
       'A spreadsheet of every calendar entry, ready to open in Excel. ' +
-      'Alongside it Recall writes a plain-language note saying exactly what ' +
+      'Inside it Recall writes a plain-language note saying exactly what ' +
       'is missing or uncertain in the file — that note is not optional.'),
     el('div', { class: 'btn-row' },
-      el('button', {
-        class: 'btn btn--primary', type: 'button',
-        onclick: (e) => runExport(e.target, 'csv', status),
-      }, 'Save as CSV for Excel'),
-      el('button', {
-        class: 'btn', type: 'button',
-        onclick: (e) => runExport(e.target, 'xlsx', status),
-      }, 'Save as an Excel workbook'),
+      // A download, the same as on the Search screen. One behaviour across the
+      // application: a non-technical user should not have to learn that one
+      // screen hands them a file and another leaves it in a folder to find.
+      el('a', {
+        class: 'btn btn--primary',
+        href: api.exportDownloadUrl({ format: 'xlsx', kind: 'event' }),
+        download: '',
+      }, 'Download the calendar as Excel'),
+      el('a', {
+        class: 'btn',
+        href: api.exportDownloadUrl({ format: 'csv', kind: 'event' }),
+        download: '',
+      }, 'Download as CSV'),
       el('button', {
         class: 'btn', type: 'button',
         onclick: (e) => runExport(e.target, 'markdown', status),
       }, 'Save as a readable document'),
     ),
+    el('p', { class: 'field__help' },
+      'A copy is kept in Recall’s own exports folder as well, so nothing is '
+      + 'lost if you cannot find the download.'),
     status,
   );
 }
