@@ -233,6 +233,12 @@ deleted and you can separate them again at any time.
 ### Problems
 See the next section. This is the most important screen.
 
+Problems are shown a page at a time — 10, 25 or 50 — because each one is a
+whole card with its own explanation and buttons. **The counts in the headings
+are always for the whole list, never for the page.** A heading reading
+*"High (100)"* means there are a hundred, and it says separately how many of
+them are in front of you.
+
 ### Item viewer
 One record in full: everyone on it, the attachments (which you can save or read
 the text of), the conversation it belongs to, and the technical headers.

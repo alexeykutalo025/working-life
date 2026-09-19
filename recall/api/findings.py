@@ -184,9 +184,18 @@ def list_findings(
     klass: str | None = None,
     source_id: int | None = None,
     limit: int = 500,
+    offset: int = 0,
 ) -> dict[str, Any]:
-    """The Problems queue, grouped severity then class."""
+    """The Problems queue, grouped severity then class.
+
+    Paged, and the counts reported alongside are for the *whole* filtered set
+    rather than for the page. On the one screen whose job is telling the truth
+    about numbers, a heading reading "High (25)" because a page happens to hold
+    twenty-five of them would be its own small lie.
+    """
     conn = _conn(request)
+    limit = max(1, min(int(limit), 500))
+    offset = max(0, int(offset))
 
     where = []
     params: list[Any] = []
@@ -219,6 +228,36 @@ def list_findings(
 
     where_sql = ("WHERE " + " AND ".join(where)) if where else ""
 
+    total = conn.execute(
+        f"SELECT COUNT(*) AS n FROM findings f {where_sql}", params
+    ).fetchone()["n"]
+
+    # Totals across everything that matched, not across this page.
+    #
+    # Classes are counted per severity as well as overall, because the screen
+    # nests one inside the other: a "Periods with no data (18)" heading sitting
+    # under "High" must mean eighteen *high* ones. Counting the class across
+    # every severity would quietly inflate it the moment one gap is medium.
+    by_severity: dict[str, int] = {}
+    by_code: dict[str, int] = {}
+    by_class: dict[str, int] = {}
+    by_severity_class: dict[str, dict[str, int]] = {}
+
+    for row in conn.execute(
+        f"SELECT f.severity, f.code, COUNT(*) AS n FROM findings f {where_sql} "
+        "GROUP BY f.severity, f.code",
+        params,
+    ):
+        severity_of, code_of, n = row["severity"], row["code"], int(row["n"])
+        klass_of = _CODE_CLASS.get(code_of, "record_quality")
+
+        by_severity[severity_of] = by_severity.get(severity_of, 0) + n
+        by_code[code_of] = by_code.get(code_of, 0) + n
+        by_class[klass_of] = by_class.get(klass_of, 0) + n
+
+        nested = by_severity_class.setdefault(severity_of, {})
+        nested[klass_of] = nested.get(klass_of, 0) + n
+
     rows = conn.execute(
         f"""
         SELECT f.*, sf.path AS source_path, i.subject AS item_subject,
@@ -230,9 +269,9 @@ def list_findings(
         {where_sql}
         ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1
                  WHEN 'medium' THEN 2 ELSE 3 END, f.code, f.id
-        LIMIT ?
+        LIMIT ? OFFSET ?
         """,
-        (*params, limit),
+        (*params, limit, offset),
     ).fetchall()
 
     findings = []
@@ -245,7 +284,16 @@ def list_findings(
     return {
         "findings": findings,
         "classes": {k: v["label"] for k, v in CLASSES.items()},
-        "count": len(findings),
+        "count": len(findings),          # on this page
+        "total": total,                  # everything that matched
+        "offset": offset,
+        "limit": limit,
+        "totals": {
+            "by_severity": by_severity,
+            "by_class": by_class,
+            "by_severity_class": by_severity_class,
+            "by_code": by_code,
+        },
     }
 
 

@@ -10,15 +10,27 @@
 
 import { api } from '../api.js';
 import {
-  clear, el, empty, errorDialog, errorNotice, field, loading, modal, monthName,
-  mount, notice, num, plural, setTitle, severityTag,
+  CARD_PAGE_SIZES, clear, el, empty, errorDialog, errorNotice, field, loading,
+  modal, monthName, mount, notice, num, pager, plural, setTitle, severityTag,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 
 const MONTH_LETTERS = ['J', 'F', 'M', 'A', 'M', 'J', 'J', 'A', 'S', 'O', 'N', 'D'];
 
-const state = { severity: '', klass: '', showState: 'open' };
+const state = {
+  severity: '', klass: '', showState: 'open',
+  offset: 0,
+  // Ten, not fifty. A finding is a whole card with its own explanation,
+  // disclosure and row of buttons, so a page of them is a long page.
+  pageSize: 10,
+};
+
+/** Changing what is listed always starts again at the first page. */
+function reload() {
+  state.offset = 0;
+  loadList();
+}
 
 export async function render() {
   setTitle('Problems');
@@ -284,7 +296,7 @@ function renderFilters() {
 
   host.append(el('div', { class: 'toolbar' },
     field('Severity', el('select', {
-      onchange: (e) => { state.severity = e.target.value; loadList(); },
+      onchange: (e) => { state.severity = e.target.value; reload(); },
     },
       el('option', { value: '' }, 'All severities'),
       el('option', { value: 'critical' }, 'Critical — data certainly lost'),
@@ -293,7 +305,7 @@ function renderFilters() {
       el('option', { value: 'info' }, 'Information'),
     )),
     field('Kind of problem', el('select', {
-      onchange: (e) => { state.klass = e.target.value; loadList(); },
+      onchange: (e) => { state.klass = e.target.value; reload(); },
     },
       el('option', { value: '' }, 'Everything'),
       el('option', { value: 'unreadable_files' }, 'Files that could not be read'),
@@ -302,7 +314,7 @@ function renderFilters() {
       el('option', { value: 'record_quality' }, 'Records with something uncertain'),
     )),
     field('Show', el('select', {
-      onchange: (e) => { state.showState = e.target.value; loadList(); },
+      onchange: (e) => { state.showState = e.target.value; reload(); },
     },
       el('option', { value: 'open' }, 'Still open'),
       el('option', { value: 'explained' }, 'Ones you have explained'),
@@ -326,10 +338,22 @@ async function loadList() {
       severity: state.severity,
       klass: state.klass,
       state: state.showState,
+      limit: state.pageSize,
+      offset: state.offset,
     });
   } catch (err) {
     clear(host);
     host.append(errorNotice(err));
+    return;
+  }
+
+  // Acting on the last finding of the last page shortens the list underneath
+  // you: "showing 111 to 118 of 117", with nothing on screen. Step back to a
+  // page that still exists rather than showing an empty one.
+  if (!data.findings.length && data.total > 0 && state.offset >= data.total) {
+    const lastPage = Math.ceil(data.total / state.pageSize) - 1;
+    state.offset = Math.max(0, lastPage * state.pageSize);
+    await loadList();
     return;
   }
 
@@ -362,7 +386,14 @@ async function loadList() {
     info: 'Worth knowing. Nothing is wrong.',
   };
 
-  host.append(el('p', { class: 'muted' }, `${plural(data.findings.length, 'problem')}.`));
+  // Counts on the headings are for everything that matched, never for the
+  // page. On the one screen whose whole job is telling the truth about
+  // numbers, "High (10)" because a page holds ten of them would be its own
+  // small lie - so where a heading's total and its page differ, it says both.
+  const totals = data.totals || {};
+  const severityTotals = totals.by_severity || {};
+  const classTotals = totals.by_severity_class || {};
+  const paged = data.total > data.findings.length;
 
   for (const severity of order) {
     const group = bySeverity.get(severity);
@@ -374,17 +405,50 @@ async function loadList() {
       byClass.get(finding.class).push(finding);
     }
 
+    const wholeSet = severityTotals[severity] ?? group.length;
+
     const section = el('section', { class: 'mb-5' },
-      el('h2', { class: 'row' }, severityTag(severity), `(${group.length})`),
+      el('h2', { class: 'row' },
+        severityTag(severity),
+        `(${num(wholeSet)})`,
+        paged && wholeSet !== group.length
+          ? el('span', { class: 'muted small' }, `${num(group.length)} on this page`)
+          : null),
       el('p', { class: 'muted' }, explanations[severity] || ''),
     );
 
     for (const [className, entries] of byClass) {
-      section.append(el('h3', {}, `${data.classes[className] || className} (${entries.length})`));
+      // The class total *within this severity*, which is what the nesting
+      // claims. The overall class total would overcount here.
+      const classTotal = (classTotals[severity] || {})[className] ?? entries.length;
+      section.append(el('h3', { class: 'row' },
+        `${data.classes[className] || className} (${num(classTotal)})`,
+        paged && classTotal !== entries.length
+          ? el('span', { class: 'muted small' }, `${num(entries.length)} here`)
+          : null));
       for (const finding of entries) section.append(findingCard(finding));
     }
     host.append(section);
   }
+
+  host.append(pager({
+    total: data.total,
+    offset: state.offset,
+    pageSize: state.pageSize,
+    unit: 'problem',
+    sizes: CARD_PAGE_SIZES,
+    onGo: (offset) => {
+      state.offset = offset;
+      loadList();
+      const top = document.getElementById('problem-list');
+      if (top) top.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    },
+    onPageSize: (size) => {
+      state.pageSize = size;
+      state.offset = 0;
+      loadList();
+    },
+  }));
 }
 
 function findingCard(finding) {

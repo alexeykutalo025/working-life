@@ -444,6 +444,9 @@ export function errorDialog(err) {
 /** How many rows a page holds. The middle one is the default everywhere. */
 export const PAGE_SIZES = [25, 50, 100];
 
+/** Fewer, for screens whose rows are whole cards rather than table lines. */
+export const CARD_PAGE_SIZES = [10, 25, 50];
+
 /**
  * Previous / Next, numbered pages, and a count.
  *
@@ -451,7 +454,7 @@ export const PAGE_SIZES = [25, 50, 100];
  * optional and adds the "per page" chooser.
  */
 export function pager({ total, offset, pageSize, onGo, onPageSize,
-                        unit = 'result', units = null }) {
+                        unit = 'result', units = null, sizes = PAGE_SIZES }) {
   if (!total) return null;
 
   const pages = Math.max(1, Math.ceil(total / pageSize));
@@ -503,7 +506,7 @@ export function pager({ total, offset, pageSize, onGo, onPageSize,
       id: 'pager-size',
       onchange: (e) => onPageSize(Number(e.target.value)),
     });
-    for (const size of PAGE_SIZES) {
+    for (const size of sizes) {
       select.append(el('option', {
         value: String(size), selected: size === pageSize,
       }, `${size} at a time`));
