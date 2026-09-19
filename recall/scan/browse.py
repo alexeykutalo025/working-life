@@ -5,9 +5,11 @@ where anything is. Someone who *does* know - "it is all in D:\\Archive\\Mail" -
 should not have to search 300 GB to reach one folder, and should not have to
 open a command prompt either.
 
-This is a folder chooser, not a file manager: it lists directories only. The
-user is picking a place to search, and showing them 4,000 files they cannot
-select would be noise.
+It lists folders and files both, because somebody who knows their mail is in
+``Outlook.pst`` should be able to point at exactly that and nothing else. A
+file Recall has no reader for is still listed, marked as unreadable rather than
+hidden: leaving it out would have the user hunting for a file that is sitting
+right in front of them.
 
 Two rules carry over from the rest of Recall:
 
@@ -25,6 +27,7 @@ import os
 import shutil
 import stat
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import Settings, fixed_drives
@@ -55,11 +58,26 @@ NOT_A_FOLDER = "That is a file, not a folder. Pick the folder it sits in."
 
 @dataclass
 class Entry:
-    """One folder offered to the user."""
+    """One folder or file offered to the user."""
 
     name: str
     path: str
     excluded_by_default: bool = False
+    #: Last changed, for the Details view. None when Windows will not say -
+    #: which is an answer, and better than showing a date that is not real.
+    modified: str | None = None
+    #: "folder" or "file".
+    kind: str = "folder"
+    #: Bytes, for a file. Folders do not have a size worth showing: working one
+    #: out means walking the whole thing, which is the expensive operation this
+    #: chooser exists to help the user avoid.
+    size: int | None = None
+    #: Lower-case extension, for a file.
+    ext: str | None = None
+    #: Can Recall actually read this kind of file? A file it cannot read is
+    #: still listed - hiding it would leave the user hunting for something that
+    #: is in front of them - but it cannot be chosen, and it says why.
+    readable_kind: bool = True
 
 
 @dataclass
@@ -162,6 +180,7 @@ def list_folder(raw: str | None, settings: Settings) -> Listing:
                        readable=False, note=NOT_A_FOLDER)
 
     exclude = settings.scan.exclude_dirs
+    known = set(settings.scan.extensions)
     entries: list[Entry] = []
     readable = True
     note = None
@@ -170,17 +189,40 @@ def list_folder(raw: str | None, settings: Settings) -> Listing:
         with os.scandir(path) as scan:
             for entry in scan:
                 try:
-                    if not entry.is_dir(follow_symlinks=False):
-                        continue
+                    is_dir = entry.is_dir(follow_symlinks=False)
                 except OSError:
                     continue
                 if _is_hidden(entry):
                     continue
+
+                if is_dir:
+                    entries.append(
+                        Entry(
+                            name=entry.name,
+                            path=entry.path,
+                            excluded_by_default=_normally_skipped(entry.name, exclude),
+                            modified=_modified(entry),
+                            kind="folder",
+                        )
+                    )
+                    continue
+
+                try:
+                    if not entry.is_file(follow_symlinks=False):
+                        continue
+                except OSError:
+                    continue
+
+                ext = os.path.splitext(entry.name)[1].lower()
                 entries.append(
                     Entry(
                         name=entry.name,
                         path=entry.path,
-                        excluded_by_default=_normally_skipped(entry.name, exclude),
+                        modified=_modified(entry),
+                        kind="file",
+                        size=_size(entry),
+                        ext=ext or None,
+                        readable_kind=ext in known,
                     )
                 )
     except PermissionError:
@@ -190,10 +232,12 @@ def list_folder(raw: str | None, settings: Settings) -> Listing:
         readable = False
         note = f"Recall could not read this folder ({exc.__class__.__name__})."
 
-    entries.sort(key=lambda e: e.name.lower())
+    # Folders first, then files, each alphabetically - the order Explorer uses,
+    # and the order somebody scanning a list expects.
+    entries.sort(key=lambda e: (e.kind != "folder", e.name.lower()))
 
     if readable and not entries:
-        note = "There are no folders inside this one. You can still search it."
+        note = "There is nothing inside this folder. You can still search it."
 
     return Listing(
         path=str(path),
@@ -204,6 +248,29 @@ def list_folder(raw: str | None, settings: Settings) -> Listing:
         entries=entries,
         crumbs=_crumbs(path),
     )
+
+
+def _size(entry: os.DirEntry) -> int | None:
+    try:
+        return int(entry.stat(follow_symlinks=False).st_size)
+    except OSError:
+        return None
+
+
+def _modified(entry: os.DirEntry) -> str | None:
+    """When this folder last changed, or None if Windows will not say.
+
+    One extra stat per folder. On Windows ``scandir`` has usually cached it
+    already, so listing a folder of a few hundred entries stays instant.
+    """
+    try:
+        when = entry.stat(follow_symlinks=False).st_mtime
+    except OSError:
+        return None
+    try:
+        return datetime.fromtimestamp(when, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except (OverflowError, OSError, ValueError):
+        return None
 
 
 def _normally_skipped(name: str, exclude_dirs: list[str]) -> bool:
@@ -226,7 +293,11 @@ def _normally_skipped(name: str, exclude_dirs: list[str]) -> bool:
 
 
 def recent_folders(conn) -> list[str]:
-    """The folders picked before, newest first, ones that still exist."""
+    """What was picked before, newest first, keeping only what still exists.
+
+    Files as well as folders: the chooser lets somebody pick one .pst
+    directly, and that is just as worth offering again.
+    """
     raw = get_setting(conn, RECENT_KEY)
     if not raw:
         return []
@@ -240,13 +311,13 @@ def recent_folders(conn) -> list[str]:
 
     out: list[str] = []
     for item in stored:
-        if isinstance(item, str) and Path(item).is_dir() and item not in out:
+        if isinstance(item, str) and Path(item).exists() and item not in out:
             out.append(item)
     return out[:RECENT_LIMIT]
 
 
 def remember_folders(conn, paths: list[str]) -> list[str]:
-    """Record folders the user chose, newest first, without duplicates.
+    """Record what the user chose, newest first, without duplicates.
 
     Drives are not remembered: they are always on the chooser anyway, and a
     "recent" list that fills up with C:\\ is no use to anybody.

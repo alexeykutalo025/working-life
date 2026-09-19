@@ -117,10 +117,20 @@ files.
 
 **"Find Outlook files on this computer"** offers every drive, ticked to start
 with. Untick anything you want left out — searching one drive is much faster
-than searching all of them. If you already know where your old mail is, press
-**"Choose a specific folder…"** and open folders until you reach it; pointing
-Recall straight at one folder takes seconds instead of an hour. Folders you
-choose are offered again next time.
+than searching all of them.
+
+If you already know where your old mail is, press **"Choose a specific
+folder…"**. That opens a window laid out like Windows File Explorer: the
+folders down the left, what is inside them on the right, and the path across
+the top. **Tiles**, **List** and **Details** change how the contents are shown,
+the same three ways Explorer does; Details adds the size, the date and what
+kind of file each one is. Recall remembers which you prefer.
+
+Open folders until you reach your mail, then press the button at the bottom.
+You can choose a whole folder, or click one single file to search just that —
+useful when you know everything is in one `.pst`. A file Recall has no reader
+for is still listed, greyed out, saying so, rather than hidden away where you
+would go looking for it. Whatever you choose is offered again next time.
 
 A folder that Windows normally skips — `Windows`, `Program Files` and a few
 others — *is* searched when you choose it by hand, and the chooser says so.

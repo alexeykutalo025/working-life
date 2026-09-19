@@ -288,6 +288,24 @@ def walk_roots(
         if not root.exists():
             log.warning("Folder to search does not exist, skipping: %s", root)
             continue
+
+        # A root can be one file, when the user picked files rather than a
+        # folder to look through. There is nothing to walk, so it goes straight
+        # to the same inspection every other candidate gets.
+        if root.is_file():
+            ext = root.suffix.lower()
+            if ext not in extensions:
+                log.warning("Recall has no reader for %s, skipping: %s", ext, root)
+                continue
+            if progress is not None:
+                progress.files_seen += 1
+            candidate = _inspect(root, ext, od_roots)
+            if candidate is not None:
+                if progress is not None:
+                    progress.candidates_found += 1
+                yield candidate
+            continue
+
         log.info("Searching %s", root)
         yield from _walk_one(
             root,

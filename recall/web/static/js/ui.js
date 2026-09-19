@@ -286,7 +286,9 @@ export function modal({ title, body, actions, onClose }) {
 
   const focusable = panel.querySelector(FOCUSABLE);
   if (focusable) focusable.focus();
-  return { close };
+  // `panel` is handed back so a caller can widen it: the folder chooser is a
+  // two-pane layout and does not fit the default reading width.
+  return { close, panel };
 }
 
 // --- progress -------------------------------------------------------------

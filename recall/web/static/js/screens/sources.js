@@ -6,6 +6,7 @@
 // showing what that would cost.
 
 import { api } from '../api.js';
+import { folderName, openFolderPicker } from '../folderpicker.js';
 import {
   bytes, clear, date, debounce, el, empty, errorDialog, errorNotice, field,
   loading, modal, mount, notice, num, plural, progressBar, setTitle,
@@ -224,6 +225,11 @@ async function openDriveChooser() {
   // choice land in the same list as everything else.
   const picked = el('div', { class: 'stack' });
 
+  // Good enough to choose a word with. A path ending in a known extension is a
+  // file; anything else is treated as a folder, and being wrong here costs a
+  // slightly odd sentence rather than anything that matters.
+  const looksLikeAFile = (path) => /\.[A-Za-z0-9]{1,5}$/.test(String(path));
+
   const addFolder = (path) => {
     if (boxes.has(path)) {
       boxes.get(path).input.checked = true;
@@ -236,7 +242,10 @@ async function openDriveChooser() {
       el('span', {},
         el('strong', {}, folderName(path)),
         el('span', { class: 'check__note' }, path),
-        el('span', { class: 'check__note' }, 'A folder you chose just now.'),
+        el('span', { class: 'check__note' },
+          looksLikeAFile(path)
+            ? 'One file you chose just now.'
+            : 'A folder you chose just now.'),
       ),
     ));
   };
@@ -295,108 +304,6 @@ async function openDriveChooser() {
       el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, 'Cancel'),
     ],
   });
-}
-
-// --- picking one folder ---------------------------------------------------
-//
-// A file-explorer-shaped chooser, kept to what the job needs: folders only,
-// because the user is choosing a place to search rather than a file to open.
-// Nothing here is a tree view - one level at a time with a breadcrumb is far
-// easier to follow than an expanding tree, and it cannot get into a state
-// where the user has lost track of where they are.
-
-function folderName(path) {
-  const parts = String(path).replace(/[\\/]+$/, '').split(/[\\/]/);
-  return parts[parts.length - 1] || path;
-}
-
-function openFolderPicker(onChoose) {
-  const listing = el('div', { class: 'stack' }, loading('Looking at this computer'));
-  const where = el('div', { class: 'picker__where' });
-  let current = null;
-
-  const go = async (path) => {
-    clear(listing);
-    clear(where);
-    listing.append(loading('Opening the folder'));
-
-    let data;
-    try {
-      data = await api.browseFolders(path);
-    } catch (err) {
-      clear(listing);
-      listing.append(errorNotice(err));
-      return;
-    }
-
-    current = data.path;
-    useThis.disabled = !data.path;
-    clear(listing);
-
-    // Where we are, as pieces you can click to climb back out.
-    where.append(el('button', {
-      class: 'btn btn--quiet', type: 'button', onclick: () => go(''),
-    }, 'This computer'));
-    for (const crumb of data.crumbs || []) {
-      where.append(el('span', { class: 'picker__sep', 'aria-hidden': 'true' }, '›'));
-      where.append(el('button', {
-        class: 'btn btn--quiet', type: 'button', onclick: () => go(crumb.path),
-      }, crumb.name));
-    }
-
-    if (data.parent) {
-      listing.append(el('button', {
-        class: 'btn btn--block picker__up', type: 'button',
-        onclick: () => go(data.parent),
-      }, '↑ Up one level'));
-    }
-
-    if (!data.readable) {
-      listing.append(notice('warning', 'Recall cannot open this folder', data.note));
-      return;
-    }
-
-    for (const entry of data.entries) {
-      listing.append(el('button', {
-        class: 'btn btn--block picker__folder', type: 'button',
-        onclick: () => go(entry.path),
-      },
-        el('span', { class: 'picker__name' }, entry.name),
-        entry.excluded_by_default
-          ? el('span', { class: 'check__note' },
-              'Normally skipped — Recall will search it because you chose it.')
-          : null,
-      ));
-    }
-
-    if (data.note) listing.append(el('p', { class: 'muted' }, data.note));
-  };
-
-  const useThis = el('button', {
-    class: 'btn btn--primary', type: 'button', disabled: true,
-    onclick: () => {
-      if (!current) return;
-      onChoose(current);
-      dialog.close();
-    },
-  }, 'Use this folder');
-
-  const dialog = modal({
-    title: 'Which folder?',
-    body: el('div', { class: 'picker' },
-      el('p', {},
-        'Open folders until you reach the one your old mail is in, then press ' +
-        '“Use this folder”. Only folders are shown.'),
-      where,
-      listing,
-    ),
-    actions: [
-      useThis,
-      el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, 'Cancel'),
-    ],
-  });
-
-  go('');
 }
 
 // --- reading files into the archive ---------------------------------------

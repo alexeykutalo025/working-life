@@ -60,21 +60,46 @@ def test_no_path_offers_the_drives(settings):
     assert all(e.path.endswith((":\\", ":/")) for e in listing.entries)
 
 
-def test_a_folder_lists_the_folders_inside_it(here: Path, settings):
+def test_a_folder_lists_what_is_inside_it(here: Path, settings):
     (here / "Letters").mkdir()
     (here / "Invoices").mkdir()
-    (here / "notes.txt").write_text("not a folder")
+    (here / "archive.pst").write_bytes(PST_HEADER)
 
     listing = list_folder(str(here), settings)
 
     assert listing.readable
-    assert [e.name for e in listing.entries] == ["Invoices", "Letters"]
+    assert [e.name for e in listing.entries] == ["Invoices", "Letters", "archive.pst"]
 
 
-def test_files_are_not_listed(here: Path, settings):
-    """This is a folder chooser. Listing files the user cannot pick is noise."""
+def test_folders_come_before_files(here: Path, settings):
+    """The order Explorer uses, and the order somebody scanning a list expects."""
+    (here / "zzz-folder").mkdir()
+    (here / "aaa.pst").write_bytes(PST_HEADER)
+
+    kinds = [e.kind for e in list_folder(str(here), settings).entries]
+    assert kinds == ["folder", "file"]
+
+
+def test_a_file_carries_what_the_details_view_needs(here: Path, settings):
     (here / "archive.pst").write_bytes(PST_HEADER)
-    assert list_folder(str(here), settings).entries == []
+
+    entry = list_folder(str(here), settings).entries[0]
+
+    assert entry.kind == "file"
+    assert entry.ext == ".pst"
+    assert entry.size == len(PST_HEADER)
+    assert entry.modified, "a file with no date would leave the column blank"
+    assert entry.readable_kind is True
+
+
+def test_a_file_recall_cannot_read_is_listed_and_marked(here: Path, settings):
+    """Hiding it would leave the user hunting for a file that is right there."""
+    (here / "holiday.jpg").write_bytes(b"not mail")
+
+    entry = list_folder(str(here), settings).entries[0]
+
+    assert entry.name == "holiday.jpg"
+    assert entry.readable_kind is False, "nothing in Recall reads a .jpg"
 
 
 def test_folders_are_sorted_so_the_eye_can_find_one(here: Path, settings):
@@ -82,6 +107,77 @@ def test_folders_are_sorted_so_the_eye_can_find_one(here: Path, settings):
         (here / name).mkdir()
     listing = list_folder(str(here), settings)
     assert [e.name for e in listing.entries] == ["Apple", "mango", "zebra"]
+
+
+# --- choosing one file outright -------------------------------------------
+
+
+def test_one_file_can_be_scanned_on_its_own(scan_settings, here: Path, conn):
+    """"My mail is in this one file" should not mean searching its whole folder."""
+    target = here / "archive.pst"
+    target.write_bytes(PST_HEADER)
+    (here / "ignore-me.pst").write_bytes(PST_HEADER)
+
+    Scanner(scan_settings, conn).run([target])
+
+    found = [r["path"] for r in conn.execute("SELECT path FROM source_files")]
+    assert found == [str(target)], "only the chosen file should have been read"
+
+
+def test_a_file_recall_cannot_read_is_not_scanned(scan_settings, here: Path, conn):
+    picture = here / "holiday.jpg"
+    picture.write_bytes(b"not mail")
+
+    Scanner(scan_settings, conn).run([picture])
+
+    found = conn.execute("SELECT COUNT(*) AS n FROM source_files").fetchone()["n"]
+    assert found == 0
+
+
+def test_a_folder_and_a_file_can_be_chosen_together(scan_settings, here: Path, conn):
+    letters = here / "Letters"
+    letters.mkdir()
+    (letters / "inside.pst").write_bytes(PST_HEADER)
+    alone = here / "alone.pst"
+    alone.write_bytes(PST_HEADER)
+
+    Scanner(scan_settings, conn).run([letters, alone])
+
+    found = sorted(Path(r["path"]).name
+                   for r in conn.execute("SELECT path FROM source_files"))
+    assert found == ["alone.pst", "inside.pst"]
+
+
+def test_the_api_accepts_a_file_as_something_to_search(client, here: Path):
+    """The walker can read one file; the endpoint must not refuse to hand it one."""
+    target = here / "archive.pst"
+    target.write_bytes(PST_HEADER)
+
+    assert client.post("/api/scan", json={"roots": [str(target)]}).status_code == 200
+
+
+def test_something_that_is_not_there_at_all_is_still_refused(client, here: Path):
+    response = client.post("/api/scan", json={"roots": [str(here / "gone.pst")]})
+    assert response.status_code == 400
+    assert "gone.pst" in response.json()["detail"]
+
+
+def test_a_chosen_file_is_remembered_like_a_folder(conn, here: Path):
+    target = here / "archive.pst"
+    target.write_bytes(PST_HEADER)
+
+    remember_folders(conn, [str(target)])
+    assert recent_folders(conn) == [str(target)]
+
+
+def test_a_file_inside_a_chosen_folder_is_not_scanned_twice(here: Path):
+    target = here / "archive.pst"
+    target.write_bytes(PST_HEADER)
+
+    keep, covered = collapse_nested_roots([here, target])
+
+    assert keep == [here]
+    assert covered == [str(target)]
 
 
 def test_a_folder_that_is_gone_says_so_rather_than_failing(tmp_path: Path, settings):
@@ -239,16 +335,6 @@ def test_scanning_a_folder_records_it_for_next_time(client, tmp_path: Path, conn
 
 
 # --- what a scan actually covers ------------------------------------------
-
-
-def test_a_file_cannot_be_submitted_as_a_folder_to_search(client, tmp_path: Path):
-    target = tmp_path / "archive.pst"
-    target.write_bytes(PST_HEADER)
-
-    response = client.post("/api/scan", json={"roots": [str(target)]})
-
-    assert response.status_code == 400
-    assert str(target) in response.json()["detail"]
 
 
 def test_a_folder_chosen_by_hand_is_searched_even_if_normally_skipped(
