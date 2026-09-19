@@ -40,7 +40,7 @@ echo ===========================================================================
 echo   Recall is starting.
 echo.
 echo   Your browser will open in a moment. If it does not, open it yourself
-echo   and go to:   http://127.0.0.1:8765
+echo   and go to the address printed just below ^(usually http://127.0.0.1:8765^).
 echo.
 echo   Keep this window open while you use Recall.
 echo   To stop:  close this window, or press Ctrl and C together.
