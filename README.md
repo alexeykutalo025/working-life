@@ -166,6 +166,23 @@ A search will never show you an error message. If what you typed is not a valid
 search, Recall looks for the whole thing as a phrase instead and tells you it
 did that.
 
+**Narrowing down.** The panel on the left groups the filters — **When**, 
+**What**, **Who**, **Where it came from** — and a group opens by itself when it
+holds something you have set, with a number beside its name. Lists with more
+than a dozen entries get a small box above them: type a few letters and the
+list shrinks to what matches, so finding one name among a hundred does not mean
+scrolling a hundred.
+
+Whatever you have narrowed by appears as **chips above the results** — *Kind:
+Messages ×*, *From: 2003 ×* — so you can see what is being excluded without
+hunting through the panel for it. Press one to take just that filter off, or
+**Clear them all**. If a date cannot be read, the box says so rather than
+quietly doing nothing; and if the filters leave nothing at all, the screen says
+that is what happened and offers to clear them.
+
+Results are shown a page at a time — 25, 50 or 100 — with numbered pages, the
+same control the People screen uses.
+
 **Readable list or Table.** The list is easier to read: one result at a time,
 with the words you searched for marked. The table shows every column, and it is
 exactly the table you get in the spreadsheet — same columns, same headings, so

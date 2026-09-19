@@ -7,7 +7,7 @@
 import { api } from '../api.js';
 import {
   clear, date, debounce, el, empty, errorNotice, kindLabel, loading, mount,
-  num, plural, setTitle, tag,
+  num, pager, plural, setTitle, tag,
 } from '../ui.js';
 
 const state = {
@@ -23,6 +23,7 @@ const state = {
   date_to: '',
   sort: 'relevance',
   offset: 0,
+  pageSize: 50,
   selected: -1,
   results: [],
   //: 'cards' reads well; 'table' is for working with the figures.
@@ -31,11 +32,93 @@ const state = {
   table_kind: '',
 };
 
-//: How many results a page holds, in either view.
-const PAGE = 50;
-const TABLE_PAGE = 50;
+/** The filter lists the server last sent, so a chip can name what it holds. */
+let filterData = null;
 
 let keyHandler = null;
+
+// --- what a filter is -----------------------------------------------------
+//
+// One description of each filter, used by both the sidebar and the chips above
+// the results. Two lists would drift, and the pair that drifted would be the
+// control that sets a filter and the chip that claims to clear it.
+
+const FILTERS = [
+  {
+    key: 'kind',
+    label: 'Kind',
+    describe: (v) => kindLabel(v),
+  },
+  {
+    key: 'person_id',
+    label: 'Person',
+    describe: (v) => lookup('people', v, (p) => p.name || '(no name)'),
+  },
+  {
+    key: 'source_id',
+    label: 'From file',
+    describe: (v) => lookup('sources', v, (s) => fileName(s.path)),
+  },
+  {
+    key: 'folder_id',
+    label: 'Folder',
+    describe: (v) => lookup('folders', v, (f) => f.path),
+  },
+  {
+    key: 'tag',
+    label: 'Category',
+    describe: (v) => v,
+  },
+  {
+    key: 'date_from',
+    label: 'From',
+    describe: (v) => v,
+  },
+  {
+    key: 'date_to',
+    label: 'Up to',
+    describe: (v) => v,
+  },
+  {
+    key: 'has_attachments',
+    label: 'Only',
+    describe: () => 'records with attachments',
+  },
+  {
+    key: 'undated',
+    label: 'Only',
+    describe: () => 'records with no date',
+  },
+];
+
+/** Name the thing an id refers to, falling back to the id if it has gone. */
+function lookup(listName, value, describe) {
+  const list = (filterData && filterData[listName]) || [];
+  const row = list.find((r) => String(r.id) === String(value));
+  return row ? describe(row) : `#${value}`;
+}
+
+/** Every filter currently narrowing the results. */
+function activeFilters() {
+  return FILTERS.filter((f) => {
+    const v = state[f.key];
+    return v !== '' && v !== false && v !== null && v !== undefined;
+  });
+}
+
+function clearFilter(key) {
+  state[key] = key === 'undated' ? false : '';
+  state.offset = 0;
+  loadFilters();
+  runSearch();
+}
+
+function clearAllFilters() {
+  for (const f of FILTERS) state[f.key] = f.key === 'undated' ? false : '';
+  state.offset = 0;
+  loadFilters();
+  runSearch();
+}
 
 export async function render({ params }) {
   setTitle('Search');
@@ -154,88 +237,70 @@ async function loadFilters() {
     return;
   }
 
+  filterData = data;
   clear(host);
-  const panel = el('div', { class: 'card' }, el('h2', { class: 'card__title mt-0' }, 'Narrow it down'));
 
-  panel.append(select('What kind of record', 'kind', [
-    { value: '', label: 'Everything' },
-    ...data.kinds.map((k) => ({
-      value: k.id, label: `${kindLabel(k.id)} (${num(k.count)})`,
-    })),
-  ]));
+  const panel = el('div', { class: 'card filters' });
+  const active = activeFilters();
 
-  panel.append(el('div', { class: 'field' },
-    el('label', { for: 'filter-from' }, 'From this date'),
-    el('input', {
-      type: 'text', id: 'filter-from', value: state.date_from,
-      placeholder: '2003, or 2003-04',
-      oninput: debounce((e) => { state.date_from = e.target.value.trim(); state.offset = 0; runSearch(); }, 400),
-    }),
-    el('label', { for: 'filter-to', class: 'mt-3' }, 'Up to this date'),
-    el('input', {
-      type: 'text', id: 'filter-to', value: state.date_to,
-      placeholder: '2009, or 2009-12',
-      oninput: debounce((e) => { state.date_to = e.target.value.trim(); state.offset = 0; runSearch(); }, 400),
-    }),
+  panel.append(el('div', { class: 'filters__head' },
+    el('h2', { class: 'card__title mt-0 mb-0' }, 'Narrow it down'),
+    el('div', { id: 'filters-clear' }),
   ));
 
-  if (data.undated) {
-    panel.append(el('label', { class: 'check' },
-      el('input', {
-        type: 'checkbox', checked: state.undated,
-        onchange: (e) => { state.undated = e.target.checked; state.offset = 0; runSearch(); },
-      }),
-      el('span', {},
-        `Only records with no date (${num(data.undated)})`,
-        el('span', { class: 'check__note' },
-          'These are not in any date range above, because they have no date.')),
-    ));
-  }
+  panel.append(group('When', ['date_from', 'date_to', 'undated'],
+    el('div', { class: 'field' },
+      el('label', { for: 'filter-from' }, 'From this date'),
+      dateInput('filter-from', 'date_from', '2003, or 2003-04'),
+      el('label', { for: 'filter-to', class: 'mt-3' }, 'Up to this date'),
+      dateInput('filter-to', 'date_to', '2009, or 2009-12'),
+      data.span && data.span.first
+        ? el('div', { class: 'field__help' },
+            `The archive runs from ${String(data.span.first).slice(0, 4)} to `
+            + `${String(data.span.last).slice(0, 4)}.`)
+        : null,
+    ),
+    data.undated
+      ? checkFilter('undated', `Only records with no date (${num(data.undated)})`,
+          'These are in no date range at all, because they have no date.')
+      : null,
+  ));
 
-  panel.append(el('label', { class: 'check' },
-    el('input', {
-      type: 'checkbox',
-      onchange: (e) => {
-        state.has_attachments = e.target.checked ? 'true' : '';
-        state.offset = 0;
-        runSearch();
-      },
-    }),
-    el('span', {}, 'Only records with attachments'),
+  panel.append(group('What', ['kind', 'has_attachments'],
+    select('Kind of record', 'kind', [
+      { value: '', label: 'Everything' },
+      ...data.kinds.map((k) => ({
+        value: k.id, label: `${kindLabel(k.id)} (${num(k.count)})`,
+      })),
+    ]),
+    checkFilter('has_attachments', 'Only records with attachments', null, 'true'),
   ));
 
   if (data.people.length) {
-    panel.append(select('Person', 'person_id', [
-      { value: '', label: 'Anyone' },
-      ...data.people.map((p) => ({
-        value: p.id, label: `${p.name || '(no name)'} (${num(p.count)})`,
-      })),
-    ]));
+    panel.append(group('Who', ['person_id'],
+      longSelect('Person', 'person_id', 'Anyone', data.people,
+        (p) => `${p.name || '(no name)'} (${num(p.count)})`),
+    ));
   }
 
-  if (data.sources.length) {
-    panel.append(select('Which file it came from', 'source_id', [
-      { value: '', label: 'Any file' },
-      ...data.sources.map((s) => ({
-        value: s.id, label: `${fileName(s.path)} (${num(s.count)})`,
-      })),
-    ]));
-  }
-
-  if (data.folders.length) {
-    panel.append(select('Folder', 'folder_id', [
-      { value: '', label: 'Any folder' },
-      ...data.folders.map((f) => ({
-        value: f.id, label: `${f.path} (${num(f.count)})`,
-      })),
-    ]));
-  }
-
-  if (data.tags.length) {
-    panel.append(select('Category', 'tag', [
-      { value: '', label: 'Any category' },
-      ...data.tags.map((t) => ({ value: t.name, label: `${t.name} (${num(t.count)})` })),
-    ]));
+  const whereKeys = ['source_id', 'folder_id', 'tag'];
+  if (data.sources.length || data.folders.length || data.tags.length) {
+    panel.append(group('Where it came from', whereKeys,
+      data.sources.length
+        ? longSelect('File it came from', 'source_id', 'Any file', data.sources,
+            (s) => `${fileName(s.path)} (${num(s.count)})`)
+        : null,
+      data.folders.length
+        ? longSelect('Folder', 'folder_id', 'Any folder', data.folders,
+            (f) => `${f.path} (${num(f.count)})`)
+        : null,
+      data.tags.length
+        ? select('Category', 'tag', [
+            { value: '', label: 'Any category' },
+            ...data.tags.map((t) => ({ value: t.name, label: `${t.name} (${num(t.count)})` })),
+          ])
+        : null,
+    ));
   }
 
   panel.append(select('Order by', 'sort', [
@@ -244,34 +309,178 @@ async function loadFilters() {
     { value: 'oldest', label: 'Oldest first' },
   ]));
 
-  panel.append(el('button', {
-    class: 'btn btn--block', type: 'button',
-    onclick: () => {
-      Object.assign(state, {
-        kind: '', person_id: '', source_id: '', folder_id: '', tag: '',
-        has_attachments: '', undated: false, date_from: '', date_to: '',
-        offset: 0,
-      });
-      loadFilters();
-      runSearch();
-    },
-  }, 'Clear all filters'));
-
   host.append(panel);
+  syncFilterChrome();
+}
+
+/**
+ * One section of the sidebar.
+ *
+ * Open when it holds an active filter, so a narrowed search never hides the
+ * thing doing the narrowing behind a closed heading.
+ */
+function group(title, keys, ...children) {
+  const live = keys.filter((k) => state[k] !== '' && state[k] !== false).length;
+  return el('details', {
+    class: 'filters__group',
+    open: live > 0 || undefined,
+    dataset: { keys: keys.join(',') },
+  },
+    el('summary', {}, title, el('span', { class: 'filters__badge' })),
+    ...children,
+  );
+}
+
+/**
+ * Bring the sidebar's counts up to date without rebuilding it.
+ *
+ * Typing in the date box must not rebuild the sidebar - that would destroy the
+ * input mid-keystroke and throw the cursor away - but the "Clear all" and the
+ * badges still have to tell the truth. So only the chrome is redrawn, never
+ * the controls themselves.
+ */
+function syncFilterChrome() {
+  const active = activeFilters();
+
+  const clearHost = document.getElementById('filters-clear');
+  if (clearHost) {
+    clear(clearHost);
+    // Only offered when there is something to clear. A permanently-lit
+    // "Clear all filters" trains the eye to ignore it.
+    if (active.length) {
+      clearHost.append(el('button', {
+        class: 'btn btn--quiet', type: 'button', onclick: clearAllFilters,
+      }, `Clear all ${active.length}`));
+    }
+  }
+
+  document.querySelectorAll('.filters__group').forEach((node) => {
+    const keys = (node.dataset.keys || '').split(',').filter(Boolean);
+    const live = keys.filter((k) => state[k] !== '' && state[k] !== false).length;
+    const badge = node.querySelector('.filters__badge');
+    if (badge) badge.textContent = live ? String(live) : '';
+  });
 }
 
 function select(label, key, options) {
   const id = `filter-${key}`;
-  return el('div', { class: 'field' },
+  const isSet = state[key] !== '' && state[key] !== false;
+  return el('div', { class: `field${isSet ? ' field--set' : ''}` },
     el('label', { for: id }, label),
     el('select', {
       id,
-      onchange: (e) => { state[key] = e.target.value; state.offset = 0; runSearch(); },
+      onchange: (e) => { state[key] = e.target.value; state.offset = 0; loadFilters(); runSearch(); },
     }, ...options.map((o) => el('option', {
       value: o.value,
       selected: String(state[key]) === String(o.value),
     }, o.label))),
   );
+}
+
+/**
+ * A dropdown with a box to narrow it first.
+ *
+ * The folder list can hold two hundred entries and the people list a hundred.
+ * Scrolling a native dropdown that long to find one name is miserable, so the
+ * list is filtered as you type and the dropdown only ever holds what matched.
+ */
+function longSelect(label, key, anyLabel, rows, describe) {
+  const id = `filter-${key}`;
+  const isSet = state[key] !== '' && state[key] !== false;
+
+  const options = (list) => [
+    el('option', { value: '', selected: !isSet }, anyLabel),
+    ...list.map((row) => el('option', {
+      value: row.id,
+      selected: String(state[key]) === String(row.id),
+    }, describe(row))),
+  ];
+
+  const dropdown = el('select', {
+    id,
+    onchange: (e) => { state[key] = e.target.value; state.offset = 0; loadFilters(); runSearch(); },
+  }, ...options(rows));
+
+  const count = el('div', { class: 'field__help' },
+    `${plural(rows.length, 'choice')}`);
+
+  const narrow = el('input', {
+    type: 'search',
+    class: 'filters__narrow',
+    'aria-label': `Narrow the ${label.toLowerCase()} list`,
+    placeholder: 'type to narrow this list',
+    oninput: debounce((e) => {
+      const needle = e.target.value.trim().toLowerCase();
+      const matched = needle
+        ? rows.filter((row) => describe(row).toLowerCase().includes(needle))
+        : rows;
+      clear(dropdown);
+      for (const option of options(matched)) dropdown.append(option);
+      clear(count);
+      count.append(needle
+        ? `${plural(matched.length, 'match', 'matches')} of ${num(rows.length)}`
+        : plural(rows.length, 'choice'));
+    }, 200),
+  });
+
+  return el('div', { class: `field${isSet ? ' field--set' : ''}` },
+    el('label', { for: id }, label),
+    rows.length > 12 ? narrow : null,
+    dropdown,
+    rows.length > 12 ? count : null,
+  );
+}
+
+/** A checkbox that is itself a filter, bound to state both ways. */
+function checkFilter(key, label, note, onValue = true) {
+  return el('label', { class: 'check' },
+    el('input', {
+      type: 'checkbox',
+      checked: state[key] === onValue || state[key] === true,
+      onchange: (e) => {
+        state[key] = e.target.checked ? onValue : (onValue === true ? false : '');
+        state.offset = 0;
+        loadFilters();
+        runSearch();
+      },
+    }),
+    el('span', {}, label,
+      note ? el('span', { class: 'check__note' }, note) : null),
+  );
+}
+
+/**
+ * A date box that says when it cannot read what was typed.
+ *
+ * The server treats an unreadable date as no filter at all, so without this
+ * the only sign of a typo is a result count that quietly does not change.
+ */
+function dateInput(id, key, placeholder) {
+  const help = el('div', { class: 'field__error' });
+
+  const check = (value) => {
+    clear(help);
+    if (value && !/^\d{4}(-\d{2}(-\d{2})?)?$/.test(value)) {
+      help.append(`"${value}" is not a date Recall can read. `
+        + 'Use a year, a year and month, or a full date.');
+      return false;
+    }
+    return true;
+  };
+
+  const box = el('input', {
+    type: 'text', id, value: state[key], placeholder,
+    oninput: debounce((e) => {
+      const value = e.target.value.trim();
+      if (!check(value)) return;
+      state[key] = value;
+      state.offset = 0;
+      runSearch();
+    }, 400),
+  });
+
+  check(state[key]);
+  return el('div', {}, box, help);
 }
 
 function fileName(path) {
@@ -301,7 +510,7 @@ async function runSearch() {
       date_from: state.date_from,
       date_to: state.date_to,
       sort: state.sort,
-      limit: PAGE,
+      limit: state.pageSize,
       offset: state.offset,
     });
   } catch (err) {
@@ -336,15 +545,26 @@ async function runSearch() {
     header.append(el('a', { class: 'health__link', href: '#/problems' }, 'Why?'));
   }
   host.append(header);
+  host.append(chipRow());
+  syncFilterChrome();
 
   if (!data.results.length) {
+    const active = activeFilters();
     host.append(empty(
-      state.q ? 'Nothing matches that' : 'Nothing here yet',
+      state.q ? 'Nothing matches that' : 'Nothing matches those filters',
       state.q
         ? 'Try fewer words, or a different spelling. Recall searches the ' +
           'subject, the message text, everyone on it, and the text inside ' +
           'attachments.'
-        : 'Type something in the box above, or use the filters to browse.',
+        : 'Type something in the box above, or widen the filters.',
+      // When filters are doing the excluding, say so and offer the way out,
+      // rather than leaving somebody to wonder why their archive looks empty.
+      active.length
+        ? el('div', { class: 'btn-row' },
+            el('button', {
+              class: 'btn btn--primary', type: 'button', onclick: clearAllFilters,
+            }, `Clear ${active.length === 1 ? 'the filter' : `all ${active.length} filters`}`))
+        : null,
     ));
     return;
   }
@@ -363,41 +583,65 @@ async function runSearch() {
   data.results.forEach((result, index) => list.append(resultCard(result, index)));
   host.append(list);
 
-  host.append(pager(total.value, data.results.length, (offset) => {
-    state.offset = offset;
-    runSearch();
-  }));
+  host.append(resultsPager(total.value));
+}
+
+/** The shared pager, wired to the search's own offset. */
+function resultsPager(total) {
+  return pager({
+    total,
+    offset: state.offset,
+    pageSize: state.pageSize,
+    unit: 'record',
+    onGo: (offset) => {
+      state.offset = offset;
+      runSearch();
+      const top = document.getElementById('search-results');
+      if (top) top.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    },
+    onPageSize: (size) => {
+      state.pageSize = size;
+      state.offset = 0;
+      runSearch();
+    },
+  });
 }
 
 /**
- * Previous / Next, and where you are.
+ * The filters currently applied, as chips over the results.
  *
- * The whole block used to be conditional on there being a next page, so on the
- * last page "Previous" disappeared too and the only way back was to run the
- * search again.
+ * The sidebar says what you *can* narrow by; this says what you *have*
+ * narrowed by, where the eye already is - and lets each one go individually,
+ * which "Clear all filters" at the bottom of a sidebar never did.
  */
-function pager(total, shown, go) {
-  if (total <= shown && state.offset === 0) return null;
+function chipRow() {
+  const active = activeFilters();
+  if (!active.length) return null;
 
-  const from = state.offset + 1;
-  const to = state.offset + shown;
+  const row = el('div', { class: 'chips' },
+    el('span', { class: 'chips__label' }, 'Narrowed to'));
 
-  return el('div', { class: 'btn-row mt-4' },
-    state.offset > 0
-      ? el('button', {
-          class: 'btn', type: 'button',
-          onclick: () => go(Math.max(0, state.offset - PAGE)),
-        }, `Previous ${PAGE}`)
-      : null,
-    to < total
-      ? el('button', {
-          class: 'btn btn--primary', type: 'button',
-          onclick: () => go(state.offset + PAGE),
-        }, `Next ${PAGE}`)
-      : null,
-    el('span', { class: 'muted' },
-      `Showing ${num(from)} to ${num(to)} of ${num(total)}`),
-  );
+  for (const filter of active) {
+    const value = filter.describe(state[filter.key]);
+    row.append(el('button', {
+      class: 'chip', type: 'button',
+      'aria-label': `Stop narrowing by ${filter.label.toLowerCase()} ${value}`,
+      title: 'Remove this filter',
+      onclick: () => clearFilter(filter.key),
+    },
+      el('span', { class: 'chip__label' }, `${filter.label}: `),
+      el('span', { class: 'chip__value' }, String(value)),
+      el('span', { class: 'chip__x', 'aria-hidden': 'true' }, '×'),
+    ));
+  }
+
+  if (active.length > 1) {
+    row.append(el('button', {
+      class: 'btn btn--quiet', type: 'button', onclick: clearAllFilters,
+    }, 'Clear them all'));
+  }
+
+  return row;
 }
 
 // --- the same results as a table ------------------------------------------
@@ -443,7 +687,7 @@ async function drawTable(host) {
       undated: state.undated ? '1' : '',
       date_from: state.date_from,
       date_to: state.date_to,
-      limit: TABLE_PAGE,
+      limit: state.pageSize,
       offset: state.offset,
     });
   } catch (err) {
@@ -505,10 +749,7 @@ async function drawTable(host) {
     el('p', { class: 'muted mt-3' },
       'These are the same columns you get in the spreadsheet. Click a row to ' +
       'open the record.'),
-    pager(data.total.value, data.rows.length, (offset) => {
-      state.offset = offset;
-      runSearch();
-    }),
+    resultsPager(data.total.value),
   );
 }
 

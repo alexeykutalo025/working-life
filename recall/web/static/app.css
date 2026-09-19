@@ -899,6 +899,66 @@ tbody tr.is-unreadable td { cursor: not-allowed; }
 tbody tr.is-clickable { cursor: pointer; }
 
 /* ==========================================================================
+   Filters, and the chips that say which are on
+
+   The sidebar says what you *can* narrow by. The chips say what you *have*
+   narrowed by, over the results where the eye already is - and each one can
+   be taken off on its own, which a "Clear all filters" button never allowed.
+   ========================================================================== */
+
+.filters__head {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: var(--sp-3); flex-wrap: wrap;
+  margin-bottom: var(--sp-4); padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+
+.filters__group { margin-bottom: var(--sp-3); }
+.filters__group > summary { font-weight: 650; }
+.filters__badge:empty { display: none; }
+.filters__badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 22px; height: 22px; margin-left: var(--sp-2); padding: 0 6px;
+  border-radius: 11px;
+  background: var(--accent); color: var(--text-inverse);
+  font-size: var(--size-small); font-weight: 700;
+}
+
+/* A control that is currently doing something, marked so the sidebar can be
+   scanned rather than read. */
+.field--set > label { color: var(--accent); }
+.field--set select, .field--set input { border-color: var(--accent); }
+
+.filters__narrow { margin-bottom: var(--sp-2); }
+
+.field__error {
+  color: var(--critical); font-size: var(--size-small); font-weight: 600;
+  margin-top: var(--sp-1);
+}
+.field__error:empty { display: none; }
+
+.chips {
+  display: flex; align-items: center; gap: var(--sp-2);
+  flex-wrap: wrap; margin-bottom: var(--sp-4);
+}
+.chips__label { color: var(--text-muted); font-size: var(--size-small); }
+
+/* A chip is a button whose whole job is to remove itself, so the cross is
+   decoration and the accessible name says what pressing it does. */
+.chip {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  min-height: 36px; padding: var(--sp-1) var(--sp-3);
+  border: 2px solid var(--accent); border-radius: 18px;
+  background: var(--accent-soft); color: var(--text);
+  font: inherit; font-size: var(--size-small); cursor: pointer;
+}
+.chip:hover { background: var(--accent); color: var(--text-inverse); }
+.chip__label { color: var(--text-muted); }
+.chip:hover .chip__label { color: var(--text-inverse); }
+.chip__value { font-weight: 700; }
+.chip__x { font-size: 18px; line-height: 1; opacity: 0.8; }
+
+/* ==========================================================================
    Paging - one pager for every long list
    ========================================================================== */
 

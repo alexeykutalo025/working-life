@@ -432,3 +432,69 @@ def test_a_gap_never_hides_a_single_page():
                     f"page {current} of {pages}: … stands in for only "
                     f"{after - before - 1} page(s)"
                 )
+
+
+# ---------------------------------------------------------------------------
+# The search filters
+# ---------------------------------------------------------------------------
+
+
+def search_js() -> str:
+    return (WEB / "static/js/screens/search.js").read_text(encoding="utf-8")
+
+
+def test_every_filter_has_somewhere_to_live():
+    """A FILTERS key with no matching state field would silently never apply.
+
+    The chip row, the sidebar and the request all read `state[key]`, so a
+    mistyped key gives a control that appears to work, changes nothing, and
+    shows no chip. Nothing about that failure looks like a bug from outside.
+    """
+    source = search_js()
+
+    block = source.split("const state = {", 1)[1].split("\n};", 1)[0]
+    fields = set(re.findall(r"^\s{2}(\w+):", block, re.MULTILINE))
+
+    filters = source.split("const FILTERS = [", 1)[1].split("\n];", 1)[0]
+    keys = set(re.findall(r"key:\s*'(\w+)'", filters))
+
+    assert keys, "no filters found; the parser is wrong"
+    missing = keys - fields
+    assert missing == set(), f"FILTERS names {sorted(missing)}, which state does not hold"
+
+
+def test_every_filter_can_say_what_it_is_set_to():
+    """A chip with no words on it is not a chip."""
+    filters = search_js().split("const FILTERS = [", 1)[1].split("\n];", 1)[0]
+    entries = re.findall(r"\{(.*?)\n  \}", filters, re.DOTALL)
+
+    assert entries, "no filter entries found; the parser is wrong"
+    for entry in entries:
+        key = re.search(r"key:\s*'(\w+)'", entry)
+        assert key, f"a filter with no key: {entry[:60]}"
+        assert "label:" in entry, f"{key.group(1)} has no label"
+        assert "describe:" in entry, f"{key.group(1)} cannot describe its value"
+
+
+def test_the_filters_and_the_request_agree():
+    """Every filter must actually reach the server, or it is decoration."""
+    source = search_js()
+
+    filters = source.split("const FILTERS = [", 1)[1].split("\n];", 1)[0]
+    keys = set(re.findall(r"key:\s*'(\w+)'", filters))
+
+    request = source.split("data = await api.search({", 1)[1].split("});", 1)[0]
+    sent = set(re.findall(r"(\w+):", request))
+
+    missing = keys - sent
+    assert missing == set(), (
+        f"{sorted(missing)} can be set on screen but is never sent to the server"
+    )
+
+
+def test_clearing_a_filter_resets_the_page():
+    """Page 7 of a result set that now has two pages shows nothing at all."""
+    source = search_js()
+    for name in ("function clearFilter(", "function clearAllFilters("):
+        body = source.split(name, 1)[1].split("\n}", 1)[0]
+        assert "state.offset = 0" in body, f"{name} leaves the offset where it was"
