@@ -41,6 +41,11 @@ def account_checks(conn, settings) -> int:
 # ---------------------------------------------------------------------------
 
 
+def pair_key(a: int, b: int) -> str:
+    """Two person ids as one stable key, whichever order they arrive in."""
+    return f"{min(a, b)}:{max(a, b)}"
+
+
 def _check_under_merged(conn, settings) -> int:
     """Two people who are probably one. Proposed, with the evidence attached."""
     from ..normalize.merge import suggest_merges
@@ -60,10 +65,19 @@ def _check_under_merged(conn, settings) -> int:
         a_name = by_id.get(proposal.person_a) or "(unnamed)"
         b_name = by_id.get(proposal.person_b) or "(unnamed)"
 
-        # The finding hangs off the lower person id so re-running produces one
-        # row per pair rather than two.
+        # A finding is identified by (code, file, item, person, period), so
+        # hanging one off a single person id gave *one row per person* rather
+        # than one per pair: every later suggestion involving the same person
+        # overwrote the previous one, and 200 proposals collapsed into six
+        # findings. Worse, turning one down then silently turned down every
+        # other pair that person appeared in.
+        #
+        # The pair itself is the thing being decided, so the pair is the key.
+        # person_id stays the lower of the two, because the finding still has
+        # to point somewhere for "jump to the person it is about".
         anchor = min(proposal.person_a, proposal.person_b)
-        present.append(("under_merged", -1, -1, anchor, ""))
+        pair = pair_key(proposal.person_a, proposal.person_b)
+        present.append(("under_merged", -1, -1, anchor, pair))
 
         caution = proposal.evidence.get("caution")
         record_finding(
@@ -82,6 +96,7 @@ def _check_under_merged(conn, settings) -> int:
                     "any time - nothing is ever deleted."
                 ),
                 person_id=anchor,
+                period_start=pair,
                 affected_count=2,
                 evidence=proposal.as_dict(),
             ),

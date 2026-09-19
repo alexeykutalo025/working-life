@@ -11,8 +11,9 @@
 
 import { api } from '../api.js';
 import {
-  clear, date, dateRange, debounce, el, empty, errorDialog, errorNotice,
-  loading, modal, mount, notice, num, pager, plural, setTitle, stat, tag,
+  CARD_PAGE_SIZES, clear, date, dateRange, debounce, el, empty, errorDialog,
+  errorNotice, loading, modal, mount, notice, num, pager, plural, setTitle,
+  stat, tabs, tag,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -20,6 +21,12 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const state = {
   sort: 'items', order: 'desc', search: '', includeSelf: true,
   offset: 0, pageSize: 50,
+  // The merge queue is computed in Python and never stored, so it arrives
+  // whole (capped at 200) and is paged here rather than on the server, where
+  // every page turn would re-run the whole comparison.
+  merges: [],
+  mergeOffset: 0,
+  mergePageSize: 10,
 };
 
 /** Anything that changes which people match starts again at the first page. */
@@ -28,24 +35,21 @@ function reload() {
   loadList();
 }
 
-export async function render({ segments }) {
+export async function render({ segments, params }) {
   if (segments.length && /^\d+$/.test(segments[0])) {
     return renderProfile(Number(segments[0]));
   }
-  return renderList();
+  return renderList(params);
 }
 
 // --- the list -------------------------------------------------------------
 
-async function renderList() {
+async function renderList(params) {
   setTitle('People');
 
-  const root = el('div', {},
-    el('h1', { class: 'page__title' }, 'People'),
-    el('p', { class: 'page__lede' },
-      'Everyone who appears anywhere in the archive. Click a name to see ' +
-      'their whole correspondence.'),
-    el('div', { id: 'merge-queue' }),
+  const duplicatesPanel = el('div', { id: 'merge-queue' }, loading('Looking for duplicates'));
+
+  const everyonePanel = el('div', {},
     el('div', { class: 'toolbar' },
       el('div', { class: 'field' },
         el('label', { for: 'people-search' }, 'Search for a person'),
@@ -82,10 +86,60 @@ async function renderList() {
     ),
     el('div', { id: 'people-list' }, loading('Loading people')),
   );
+
+  // The queue is fetched before the tabs are built, because which tab opens
+  // depends on whether it found anything. Landing on an empty tab is a poor
+  // way to arrive at a screen.
+  let queue = null;
+  try {
+    queue = await api.mergeQueue();
+    state.merges = queue.proposals;
+  } catch (err) {
+    state.merges = [];
+    queueError = err;
+  }
+
+  const wanted = params && params.get('tab');
+  const opening = (wanted === 'duplicates' || wanted === 'everyone')
+    ? wanted
+    : (state.merges.length ? 'duplicates' : 'everyone');
+
+  const strip = tabs({
+    label: 'People',
+    selected: opening,
+    onSelect: (id) => {
+      // In the address bar, so Back works and a tab can be linked to.
+      const hash = id === 'everyone' ? '#/people' : `#/people?tab=${id}`;
+      if (window.location.hash !== hash) {
+        window.history.replaceState(null, '', hash);
+      }
+    },
+    items: [
+      {
+        id: 'duplicates',
+        label: 'Possible duplicates',
+        count: state.merges.length,
+        panel: duplicatesPanel,
+      },
+      { id: 'everyone', label: 'Everyone', count: null, panel: everyonePanel },
+    ],
+  });
+
+  const root = el('div', {},
+    el('h1', { class: 'page__title' }, 'People'),
+    el('p', { class: 'page__lede' },
+      'Everyone who appears anywhere in the archive. Click a name to see ' +
+      'their whole correspondence.'),
+    strip.element,
+  );
   mount(root);
 
-  await Promise.all([loadMergeQueue(), loadList()]);
+  drawMergeQueue(queue);
+  await loadList();
 }
+
+/** Set aside when the queue cannot be fetched, so the tab can say why. */
+let queueError = null;
 
 async function loadList() {
   const host = document.getElementById('people-list');
@@ -188,31 +242,98 @@ function personRow(p) {
 
 // --- the merge review queue ----------------------------------------------
 
-async function loadMergeQueue() {
+/** Ask the server for the queue again, after a merge changed it. */
+async function refreshMergeQueue() {
+  queueError = null;
+  let data = null;
+  try {
+    data = await api.mergeQueue();
+    state.merges = data.proposals;
+  } catch (err) {
+    queueError = err;
+    state.merges = [];
+  }
+  // A merge shortens the queue, so a later page may no longer exist.
+  if (state.mergeOffset >= state.merges.length) {
+    const lastPage = Math.ceil(state.merges.length / state.mergePageSize) - 1;
+    state.mergeOffset = Math.max(0, lastPage * state.mergePageSize);
+  }
+  drawMergeQueue(data);
+  updateDuplicatesCount();
+}
+
+/** Keep the tab's badge in step with the queue behind it. */
+function updateDuplicatesCount() {
+  const badge = document.querySelector('.tabs__tab .tabs__count');
+  if (badge) badge.textContent = num(state.merges.length);
+}
+
+/**
+ * The duplicates tab, drawn from what is already in hand.
+ *
+ * `note` comes from the server and is worth keeping; everything else is
+ * sliced locally out of `state.merges`.
+ */
+function drawMergeQueue(data) {
   const host = document.getElementById('merge-queue');
   if (!host) return;
 
-  let data;
-  try {
-    data = await api.mergeQueue();
-  } catch (err) {
-    clear(host);
-    host.append(errorNotice(err));
+  clear(host);
+
+  if (queueError) {
+    host.append(errorNotice(queueError));
     return;
   }
 
-  clear(host);
-  if (!data.proposals.length) return;
+  const total = state.merges.length;
+
+  if (!total) {
+    // This tab used to render nothing at all when the queue was empty, which
+    // as a tab would look like a screen that failed to load.
+    host.append(empty('Nobody looks like a duplicate',
+      'Recall compared every name and address in the archive and found no two '
+      + 'entries it thinks are the same person. Nothing needs doing here.'));
+    return;
+  }
+
+  const page = state.merges.slice(
+    state.mergeOffset, state.mergeOffset + state.mergePageSize);
 
   const list = el('div', { class: 'stack' });
-  for (const proposal of data.proposals) list.append(proposalCard(proposal));
+  for (const proposal of page) list.append(proposalCard(proposal));
 
-  host.append(el('div', { class: 'card' },
+  const card = el('div', { class: 'card' },
+    // The count is the whole queue, never the page.
     el('h2', { class: 'card__title mt-0' },
-      `${plural(data.proposals.length, 'person', 'people')} may be listed twice`),
-    el('p', {}, data.note),
+      `${plural(total, 'person', 'people')} may be listed twice`),
+    el('p', {}, (data && data.note) || ''),
+    data && data.dismissed
+      ? el('p', { class: 'muted' },
+          `${plural(data.dismissed, 'suggestion')} you have already turned down `
+          + 'are not shown.')
+      : null,
     list,
-  ));
+    pager({
+      total,
+      offset: state.mergeOffset,
+      pageSize: state.mergePageSize,
+      unit: 'suggestion',
+      sizes: CARD_PAGE_SIZES,
+      onGo: (offset) => {
+        state.mergeOffset = offset;
+        drawMergeQueue(data);
+        const top = document.getElementById('merge-queue');
+        if (top) top.scrollIntoView({ block: 'start', behavior: 'smooth' });
+      },
+      onPageSize: (size) => {
+        state.mergePageSize = size;
+        state.mergeOffset = 0;
+        drawMergeQueue(data);
+      },
+    }),
+  );
+
+  host.append(card);
 }
 
 function proposalCard(proposal) {
@@ -310,7 +431,7 @@ async function confirmMerge(proposal) {
           dialog.close();
           try {
             await api.mergePeople(keepId, mergeId);
-            await Promise.all([loadMergeQueue(), loadList()]);
+            await Promise.all([refreshMergeQueue(), loadList()]);
           } catch (err) {
             errorDialog(err);
           }
@@ -325,11 +446,25 @@ async function confirmMerge(proposal) {
 async function dismissProposal(proposal, card) {
   // "These are different people" is a decision about a finding, so it is
   // recorded as one: won't-fix, with a note, and the row is kept forever.
-  const findingId = proposal.evidence.finding_id;
+  // record_finding() never overwrites a state the user set, so the decision
+  // survives every later run of the checks.
+  const findingId = proposal.evidence && proposal.evidence.finding_id;
+
   card.replaceWith(notice('good', 'Noted',
-    'They will stay as two separate people.'
-    + (findingId ? '' : ' This will be suggested again after the next run unless '
-       + 'you mark it won’t-fix on the Problems screen.')));
+    findingId
+      ? 'They will stay as two separate people, and this will not be '
+        + 'suggested again.'
+      : 'They will stay as two separate people. Recall could not find the '
+        + 'matching entry on the Problems screen to record that against, so '
+        + 'this may be suggested again after the next run.'));
+
+  // Take it out of the queue behind the screen too, so the count on the tab
+  // and the pager agree with what is there.
+  const at = state.merges.findIndex(
+    (p) => p.person_a === proposal.person_a && p.person_b === proposal.person_b);
+  if (at !== -1) state.merges.splice(at, 1);
+  updateDuplicatesCount();
+
   if (findingId) {
     try {
       await api.setFindingState(findingId, 'wont_fix', 'The user says these are different people');

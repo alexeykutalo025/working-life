@@ -135,15 +135,49 @@ def _person_row(row) -> dict[str, Any]:
 
 @router.get("/people/merge-queue")
 def merge_queue(request: Request) -> dict[str, Any]:
-    """Proposed merges, with their evidence. Nothing here has been applied."""
+    """Proposed merges, with their evidence. Nothing here has been applied.
+
+    Not paginated on purpose. Proposals are computed in Python - a
+    participations self-join and then a pairwise name comparison - and never
+    stored, so there is nothing to LIMIT. Paging here would re-run the whole
+    comparison for every page turn. The list is capped at 200 instead and the
+    screen slices it.
+    """
     from ..normalize.merge import suggest_merges
 
     conn = _conn(request)
     settings = _settings(request)
     proposals = suggest_merges(conn, settings)
 
+    # Each proposal has a matching `under_merged` finding, keyed by the pair
+    # (see accounts.pair_key). One query, not one per proposal.
+    #
+    # Two things hang off this. The screen needs the finding id to record "these
+    # are different people" as a won't-fix - without it that decision was never
+    # saved anywhere and the same suggestion came back after every run. And a
+    # pair already turned down is left out here, because recording a refusal and
+    # then showing the suggestion again is the same bug wearing a different hat.
+    from ..integrity.accounts import pair_key
+
+    finding_for: dict[str, int] = {}
+    refused: set[str] = set()
+    for row in conn.execute(
+        "SELECT id, period_start, state FROM findings "
+        "WHERE code = 'under_merged' AND period_start IS NOT NULL"
+    ):
+        key = str(row["period_start"])
+        if row["state"] == "wont_fix":
+            refused.add(key)
+        else:
+            finding_for[key] = int(row["id"])
+
     out = []
+    dismissed = 0
     for proposal in proposals:
+        pair = pair_key(proposal.person_a, proposal.person_b)
+        if pair in refused:
+            dismissed += 1
+            continue
         people = {
             int(r["id"]): _person_row(r)
             for r in conn.execute(
@@ -168,8 +202,16 @@ def merge_queue(request: Request) -> dict[str, Any]:
         # The one with more records is offered as the one to keep, because
         # merging the smaller into the larger loses less if it is later undone.
         keep, merge = (a, b) if a["item_count"] >= b["item_count"] else (b, a)
+
+        payload = proposal.as_dict()
+        # The screen reads the id out of the evidence to record a refusal.
+        payload["evidence"] = {
+            **(payload.get("evidence") or {}),
+            "finding_id": finding_for.get(pair),
+        }
+
         out.append({
-            **proposal.as_dict(),
+            **payload,
             "a": a,
             "b": b,
             "suggested_keep": keep["id"],
@@ -179,6 +221,8 @@ def merge_queue(request: Request) -> dict[str, Any]:
     return {
         "proposals": out,
         "count": len(out),
+        "total": len(out),
+        "dismissed": dismissed,
         "note": (
             "Recall has not merged anyone. Each suggestion below is a guess with "
             "its evidence shown. Confirming one can be undone at any time."

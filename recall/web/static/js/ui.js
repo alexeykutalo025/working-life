@@ -557,3 +557,107 @@ export function pageNumbers(current, pages, span = 5) {
   }
   return out;
 }
+
+
+// --- tabs -----------------------------------------------------------------
+//
+// One screen holding two separate things. Built to the ARIA tabs pattern
+// rather than as a row of buttons, because a tablist tells a screen reader
+// "these are alternative views of one screen" and a row of buttons does not.
+//
+// The keyboard behaviour is the part that is easy to leave out and the part
+// that makes it a real tablist: Left/Right move between tabs, Home and End
+// jump to the ends, and only the selected tab is in the Tab order, so tabbing
+// past the strip lands in the panel rather than walking through every tab.
+
+let tabSetCounter = 0;
+
+/**
+ * A tab strip and its panels.
+ *
+ * `items` is [{ id, label, count, panel }]. `panel` is the element to show.
+ * `onSelect(id)` is called whenever the selection changes, so a screen can put
+ * the choice in the URL.
+ *
+ * Returns { element, select(id), selected }.
+ */
+export function tabs({ items, selected, onSelect, label = 'Sections' }) {
+  const live = items.filter(Boolean);
+  if (!live.length) return { element: el('div', {}), select: () => {}, selected: null };
+
+  tabSetCounter += 1;
+  const setId = `tabs-${tabSetCounter}`;
+  let current = live.some((t) => t.id === selected) ? selected : live[0].id;
+
+  const strip = el('div', { class: 'tabs__strip', role: 'tablist', 'aria-label': label });
+  const panels = el('div', { class: 'tabs__panels' });
+  const buttons = new Map();
+
+  const show = (id, { focus = false } = {}) => {
+    current = id;
+    for (const item of live) {
+      const on = item.id === current;
+      const button = buttons.get(item.id);
+      button.classList.toggle('is-selected', on);
+      button.setAttribute('aria-selected', on ? 'true' : 'false');
+      // Only the selected tab is tabbable; the arrows move between them.
+      button.tabIndex = on ? 0 : -1;
+      item.panel.hidden = !on;
+    }
+    if (focus) buttons.get(current).focus();
+    if (onSelect) onSelect(current);
+  };
+
+  const step = (from, delta) => {
+    const at = live.findIndex((t) => t.id === from);
+    const next = (at + delta + live.length) % live.length;
+    show(live[next].id, { focus: true });
+  };
+
+  for (const item of live) {
+    // A panel may already have an id the screen looks itself up by; taking it
+    // over would break every getElementById pointed at it.
+    const panelId = item.panel.id || `${setId}-panel-${item.id}`;
+    const tabId = `${setId}-tab-${item.id}`;
+
+    const button = el('button', {
+      class: 'tabs__tab',
+      type: 'button',
+      role: 'tab',
+      id: tabId,
+      'aria-controls': panelId,
+      onclick: () => show(item.id),
+      onkeydown: (e) => {
+        if (e.key === 'ArrowRight') { e.preventDefault(); step(item.id, 1); }
+        else if (e.key === 'ArrowLeft') { e.preventDefault(); step(item.id, -1); }
+        else if (e.key === 'Home') { e.preventDefault(); show(live[0].id, { focus: true }); }
+        else if (e.key === 'End') {
+          e.preventDefault();
+          show(live[live.length - 1].id, { focus: true });
+        }
+      },
+    },
+      el('span', {}, item.label),
+      item.count === null || item.count === undefined
+        ? null
+        : el('span', { class: 'tabs__count' }, num(item.count)),
+    );
+
+    buttons.set(item.id, button);
+    strip.append(button);
+
+    item.panel.id = panelId;
+    item.panel.setAttribute('role', 'tabpanel');
+    item.panel.setAttribute('aria-labelledby', tabId);
+    item.panel.tabIndex = 0;
+    panels.append(item.panel);
+  }
+
+  show(current);
+
+  return {
+    element: el('div', { class: 'tabs' }, strip, panels),
+    select: (id) => show(id),
+    get selected() { return current; },
+  };
+}

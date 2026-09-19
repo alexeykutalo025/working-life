@@ -225,10 +225,18 @@ the middle or the end rather than pressing Next over and over. Click a name for 
 they used, a graph of correspondence over time, and who else was on those
 records.
 
-At the top is the **merge review queue**. When Recall thinks two entries are one
-person it says so, shows you both side by side with the evidence, *and waits*.
-It never merges anybody on its own. When you do merge two people, nothing is
-deleted and you can separate them again at any time.
+The screen has two tabs. **Possible duplicates** is the merge review queue:
+when Recall thinks two entries are one person it says so, shows you both side by
+side with the evidence, *and waits*. It never merges anybody on its own. When you
+do merge two people, nothing is deleted and you can separate them again at any
+time. Suggestions come ten at a time, and the tab carries the number still
+waiting.
+
+Pressing **"No, they are different people"** is remembered. That pair is not
+suggested again, however many times Recall re-checks the archive, and the
+decision is kept on the Problems screen where you can see and undo it.
+
+**Everyone** is the full list.
 
 ### Problems
 See the next section. This is the most important screen.
