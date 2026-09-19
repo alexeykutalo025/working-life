@@ -281,6 +281,16 @@ see. Open Outlook yourself, answer whatever it asks, close it, and run Recall
 again. Recall gives up on Outlook after two minutes of no progress and carries
 on with the next file, so it will not hang forever.
 
+When that happens Recall also closes the invisible copy of Outlook it started,
+and tells you it has. This matters: a stuck copy holds your mail profile, so
+without clearing it the next attempt would get stuck the same way and you could
+not open Outlook yourself to fix it either. **Recall only ever closes an Outlook
+it started itself and that has no window on screen** — if Outlook was already
+running when Recall asked, it is left strictly alone, even if it is the thing in
+the way. In that case the message tells you to end `OUTLOOK.EXE` in Task
+Manager, because closing an Outlook you might be typing in is not a decision
+this program will make for you.
+
 **Searching does not find something I know is there.**
 Check Home: if it says the search index is not complete, type `recall index` in
 the black window. If it still does not find it, the record may be in a file that

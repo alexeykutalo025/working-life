@@ -30,7 +30,10 @@ import json
 from pathlib import Path
 from typing import Any, Iterator
 
-from ..comguard import ComTimeout, ComUnavailable, is_outlook_registered, run_with_timeout
+from ..comguard import (
+    CLEANED_UP, ComTimeout, ComUnavailable, end_stranded_outlook,
+    is_outlook_registered, outlook_processes, run_with_timeout,
+)
 from ..logging_setup import get_logger
 from ..models import (
     Kind,
@@ -707,6 +710,8 @@ class OutlookComBackend(PstBackend):
             self.outcome.error = "Microsoft Outlook is not available on this computer"
             return
 
+        # Anything already running is somebody else's; see end_stranded_outlook.
+        outlook_before = outlook_processes()
         try:
             records = run_with_timeout(
                 lambda pulse: self._read_everything(kinds, pulse),
@@ -715,13 +720,16 @@ class OutlookComBackend(PstBackend):
                 heartbeat=True,
             )
         except ComTimeout as exc:
+            detail = str(exc)
+            if end_stranded_outlook(outlook_before):
+                detail += CLEANED_UP
             self.outcome.error = "Outlook stopped responding"
-            self.outcome.error_detail = str(exc)
+            self.outcome.error_detail = detail
             self.outcome.add_finding(
                 "read_failure",
                 "critical",
                 f"{self.path.name}: Outlook stopped responding while reading it",
-                str(exc),
+                detail,
                 {"path": str(self.path), "backend": self.name},
             )
             return
