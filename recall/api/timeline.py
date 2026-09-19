@@ -335,6 +335,70 @@ class EraRequest(BaseModel):
     notes: str | None = None
 
 
+def normalize_era_date(value: str | None, *, end: bool, label: str) -> str | None:
+    """Turn what a person types into a date, or say plainly why it is not one.
+
+    A period is something like "Harrow & Sons, 1984 to 1997", and nobody wants
+    to type 1984-01-01 to say that. A year on its own means the whole year, a
+    year and month means the whole month, and the end of a period is inclusive
+    - so "to 1997" ends on the last day of 1997, not the first.
+
+    An unparseable date is refused rather than dropped. A period silently
+    missing one end would shade the wrong stretch of the chart, and the chart
+    is the thing the user is trying to make sense of.
+    """
+    if value is None:
+        return None
+    text = value.strip()
+    if not text:
+        return None
+
+    # Accept an ISO timestamp by keeping only the date part of it.
+    text = text.split("T")[0].strip()
+
+    unreadable = HTTPException(
+        status_code=400,
+        detail=(
+            f"{label} is not a date I can read. Write a year (1984), "
+            f"a year and month (1984-06), or a full date (1984-06-01)."
+        ),
+    )
+
+    raw = text.split("-")
+    if len(raw) > 3 or not all(p.isdigit() for p in raw):
+        raise unreadable
+
+    # A four-digit year, always. "84" could be 1984 or 2084 and this program
+    # does not guess dates - not here, and not in the archive.
+    if len(raw[0]) != 4:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} needs the year written out in full, like 1984.",
+        )
+
+    parts = [int(p) for p in raw]
+    year = parts[0]
+    month = parts[1] if len(parts) > 1 else (12 if end else 1)
+
+    if year < 1:
+        raise unreadable
+    if not 1 <= month <= 12:
+        raise HTTPException(
+            status_code=400, detail=f"{label} has month {month}, and months run 1 to 12."
+        )
+
+    last = _calendar.monthrange(year, month)[1]
+    day = parts[2] if len(parts) > 2 else (last if end else 1)
+
+    if not 1 <= day <= last:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{label} has day {day}, and that month has {last} days.",
+        )
+
+    return f"{year:04d}-{month:02d}-{day:02d}"
+
+
 @router.get("/eras")
 def list_eras(request: Request) -> list[dict]:
     return _eras(_conn(request))
@@ -343,11 +407,22 @@ def list_eras(request: Request) -> list[dict]:
 @router.post("/eras")
 def create_era(request: Request, body: EraRequest) -> dict:
     conn = _conn(request)
-    if not body.name.strip():
+    name = body.name.strip()
+    if not name:
         raise HTTPException(status_code=400, detail="A period needs a name.")
+
+    start = normalize_era_date(body.start_utc, end=False, label="The start date")
+    end = normalize_era_date(body.end_utc, end=True, label="The end date")
+
+    if start and end and end < start:
+        raise HTTPException(
+            status_code=400,
+            detail=f"This period ends ({end}) before it starts ({start}).",
+        )
+
     cur = conn.execute(
         "INSERT INTO eras(name, start_utc, end_utc, color, notes) VALUES (?, ?, ?, ?, ?)",
-        (body.name.strip(), body.start_utc, body.end_utc, body.color, body.notes),
+        (name, start, end, body.color, body.notes),
     )
     return {"id": int(cur.lastrowid), "saved": True}
 

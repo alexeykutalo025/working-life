@@ -13,7 +13,7 @@
 
 import { api } from '../api.js';
 import {
-  clear, el, empty, errorNotice, loading, mount, num, plural, setTitle,
+  clear, el, empty, errorNotice, loading, modal, mount, num, plural, setTitle,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -77,6 +77,7 @@ async function draw() {
     el('div', { class: 'card' }, chart(data)),
     legend(data),
     undatedPanel(data.undated),
+    periodsPanel(data),
     exportPanel(),
   );
 }
@@ -447,6 +448,181 @@ function undatedPanel(undated) {
         .map(([k, n]) => `${num(n)} ${(KIND_LABELS[k] || k).toLowerCase()}`)
         .join(', ')),
   );
+}
+
+// --- periods ("eras") -----------------------------------------------------
+//
+// Spec screen 4 asks for user-defined eras shaded behind the bars. The drawing
+// half already existed; this is the half that lets someone actually make one.
+// The word "era" never reaches the screen - to the person using this they are
+// periods of their own life, and that is what they are called.
+
+const ERA_COLORS = [
+  { name: 'Blue', value: '#3d6ea8' },
+  { name: 'Green', value: '#3f7d5a' },
+  { name: 'Amber', value: '#9a6b1f' },
+  { name: 'Plum', value: '#7a4a7d' },
+  { name: 'Rust', value: '#a1502f' },
+  { name: 'Slate', value: '#5a6473' },
+];
+
+function periodsPanel(data) {
+  const eras = data.eras || [];
+  const status = el('div', { id: 'era-status' });
+
+  const card = el('div', { class: 'card' },
+    el('h2', { class: 'card__title mt-0' }, 'Periods of your life'),
+    el('p', {},
+      'You can mark out stretches of time that meant something — a job, a ' +
+      'company, a move — and they will be shaded behind the bars above. ' +
+      'This changes nothing in the archive itself; it only makes the picture ' +
+      'easier to read.'),
+  );
+
+  if (eras.length) {
+    const list = el('ul', { class: 'era-list' });
+    for (const era of eras) list.append(eraRow(era, status));
+    card.append(list);
+  } else {
+    card.append(el('p', { class: 'muted' }, 'You have not marked out any periods yet.'));
+  }
+
+  card.append(
+    el('div', { class: 'btn-row' },
+      el('button', {
+        class: 'btn btn--primary', type: 'button',
+        onclick: () => openEraDialog(data),
+      }, 'Add a period'),
+    ),
+    status,
+  );
+  return card;
+}
+
+function eraRow(era, status) {
+  return el('li', {},
+    el('span', { class: 'row' },
+      swatch(era.color || 'var(--accent)'),
+      el('strong', {}, era.name),
+      el('span', { class: 'muted' }, describeSpan(era)),
+      era.notes ? el('span', { class: 'muted' }, `— ${era.notes}`) : null,
+    ),
+    el('button', {
+      class: 'btn', type: 'button',
+      onclick: () => removeEra(era, status),
+    }, 'Remove'),
+  );
+}
+
+function describeSpan(era) {
+  if (era.start_utc && era.end_utc) return `${era.start_utc} to ${era.end_utc}`;
+  if (era.start_utc) return `from ${era.start_utc}`;
+  if (era.end_utc) return `until ${era.end_utc}`;
+  return 'no dates set, so it is not shaded on the chart';
+}
+
+function openEraDialog(data) {
+  const span = data.span || {};
+  const name = el('input', { type: 'text', id: 'era-name', maxlength: '80' });
+  const from = el('input', {
+    type: 'text', id: 'era-from', placeholder: String(span.first_year || '1984'),
+  });
+  const to = el('input', {
+    type: 'text', id: 'era-to', placeholder: String(span.last_year || '1997'),
+  });
+  const notes = el('input', { type: 'text', id: 'era-notes', maxlength: '200' });
+
+  const color = el('select', { id: 'era-color' });
+  ERA_COLORS.forEach((c) => color.append(el('option', { value: c.value }, c.name)));
+
+  const problem = el('div', { role: 'alert' });
+
+  const body = el('div', {},
+    el('p', {},
+      'Dates can be as rough as you like. A year on its own means the whole ' +
+      'year, so "1984" to "1997" covers everything from the start of 1984 to ' +
+      'the end of 1997.'),
+    field('What was it?', name, 'For example: Harrow & Sons, or Living in Leeds'),
+    field('From', from, 'A year, or a year and month, or a full date'),
+    field('Until', to, 'Leave empty if it has not ended'),
+    field('Colour', color),
+    field('A note to yourself (optional)', notes),
+    problem,
+  );
+
+  const dialog = modal({
+    title: 'Add a period',
+    body,
+    actions: [
+      el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, 'Cancel'),
+      el('button', {
+        class: 'btn btn--primary', type: 'button',
+        onclick: async (e) => {
+          clear(problem);
+          if (!name.value.trim()) {
+            problem.append(el('div', { class: 'notice notice--error' },
+              el('p', { class: 'mb-0' }, 'Give the period a name first.')));
+            name.focus();
+            return;
+          }
+          e.target.disabled = true;
+          e.target.textContent = 'Saving…';
+          try {
+            await api.createEra({
+              name: name.value.trim(),
+              start_utc: from.value.trim() || null,
+              end_utc: to.value.trim() || null,
+              color: color.value,
+              notes: notes.value.trim() || null,
+            });
+            dialog.close();
+            await draw();
+          } catch (err) {
+            // The server's complaint is already in plain language; showing it
+            // is more use than replacing it with a general apology.
+            e.target.disabled = false;
+            e.target.textContent = 'Save this period';
+            problem.append(el('div', { class: 'notice notice--error' },
+              el('p', { class: 'mb-0' }, err.message)));
+          }
+        },
+      }, 'Save this period'),
+    ],
+  });
+}
+
+function field(label, input, hint) {
+  return el('div', { class: 'field' },
+    el('label', { for: input.id }, label),
+    input,
+    hint ? el('div', { class: 'field__help' }, hint) : null,
+  );
+}
+
+async function removeEra(era, status) {
+  clear(status);
+  const dialog = modal({
+    title: `Remove "${era.name}"?`,
+    body: el('p', {},
+      'This only removes the shading from the chart. Nothing in your archive ' +
+      'is deleted or changed.'),
+    actions: [
+      el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() }, 'Keep it'),
+      el('button', {
+        class: 'btn btn--danger', type: 'button',
+        onclick: async () => {
+          try {
+            await api.deleteEra(era.id);
+            dialog.close();
+            await draw();
+          } catch (err) {
+            dialog.close();
+            status.append(errorNotice(err));
+          }
+        },
+      }, 'Remove it'),
+    ],
+  });
 }
 
 function exportPanel() {

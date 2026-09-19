@@ -583,6 +583,15 @@ mark {
 .stack > * + * { margin-top: var(--sp-4); }
 .row { display: flex; gap: var(--sp-3); align-items: center; flex-wrap: wrap; }
 
+/* Periods of the user's own life, shaded behind the timeline bars. */
+.era-list { list-style: none; margin: var(--sp-4) 0; padding: 0; }
+.era-list li {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: var(--sp-3);
+  padding: var(--sp-3) 0; border-bottom: 1px solid var(--border);
+}
+.era-list li:last-child { border-bottom: none; }
+
 .spinner-text::after {
   content: "";
   animation: dots 1.2s steps(4, end) infinite;

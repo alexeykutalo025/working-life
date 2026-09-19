@@ -139,6 +139,18 @@ its days. Click any bar to see those records in Search.
 never draws a line across a gap, never averages one out, and never lets an empty
 month look like a small one.
 
+Underneath is **Periods of your life**. You can mark out a stretch of time that
+meant something — a job, a company, a move — and it is shaded behind the bars
+with its name on it, which makes the picture far easier to read. Dates can be as
+rough as you like: a year on its own means the whole year, so *1984* to *1997*
+covers the start of 1984 to the end of 1997. Marking a period changes nothing in
+the archive; removing one only removes the shading.
+
+If you type a date Recall cannot read, it says so and asks again rather than
+storing a blank — a period missing one end would shade the wrong stretch of the
+chart. It will not accept a two-digit year either, because *84* could be 1984 or
+2084 and this program does not guess dates.
+
 ### People
 Everyone who appears anywhere in the archive, with when you first and last
 corresponded and how much. Click a name for their whole history: every address
