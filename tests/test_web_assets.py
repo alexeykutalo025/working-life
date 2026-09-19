@@ -168,18 +168,26 @@ def test_braces_and_brackets_balance(path: Path):
         )
 
 
+def matching(text: str, start: int, opener: str, closer: str) -> int:
+    """The index just past the bracket that closes the one at `start`."""
+    depth, i = 0, start
+    while i < len(text):
+        if text[i] == opener:
+            depth += 1
+        elif text[i] == closer:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return i
+
+
 def top_level_arguments(text: str, start: int) -> list[str]:
     """The arguments of the call whose opening paren is just before `start`."""
-    depth, i = 1, start
-    while i < len(text) and depth:
-        if text[i] in "([{":
-            depth += 1
-        elif text[i] in ")]}":
-            depth -= 1
-        i += 1
+    end = matching(text, start - 1, "(", ")")
 
     args, buf, depth = [], "", 0
-    for c in text[start:i - 1]:
+    for c in text[start:end - 1]:
         if c in "([{":
             depth += 1
         elif c in ")]}":
@@ -193,26 +201,76 @@ def top_level_arguments(text: str, start: int) -> list[str]:
     return args
 
 
+def functions_that_can_return_nothing() -> set[str]:
+    """Every named function in the front end whose body can return null.
+
+    Found by reading the bodies, and then followed one step further: a
+    function that returns the result of one of them can return null too, which
+    is how `resultsPager` inherits it from `pager`.
+    """
+    bodies: dict[str, str] = {}
+    for path in JS_FILES:
+        text = path.read_text(encoding="utf-8")
+        for m in re.finditer(r"^(?:export\s+)?function\s+(\w+)\s*\(", text, re.M):
+            # Step over the parameter list first - `function pager({ total })`
+            # has a brace that is not the body.
+            after_params = matching(text, m.end() - 1, "(", ")")
+            start = text.index("{", after_params)
+            bodies[m.group(1)] = text[start:matching(text, start, "{", "}")]
+
+    nullable = {n for n, b in bodies.items() if re.search(r"return\s+null\s*;", b)}
+    for _ in range(len(bodies)):
+        grown = {
+            name for name, body in bodies.items()
+            if any(re.search(rf"return\s+{other}\(", body) for other in nullable)
+        }
+        if grown <= nullable:
+            break
+        nullable |= grown
+    return nullable
+
+
 @pytest.mark.parametrize("path", JS_FILES, ids=lambda p: p.name)
-def test_nothing_appends_a_bare_null(path: Path):
-    """`x ? el(...) : null` is safe inside el() and a visible bug in append().
+def test_nothing_appends_something_that_might_not_be_there(path: Path):
+    """el() drops a null child. Node.append prints it.
 
-    el() drops null children. Node.append does not - it converts null to the
-    string "null" and puts it on the page. The selection bar on Files found
-    read "3 files ticked. [Read 3 files] nullnull [Clear the ticks]" for
-    exactly this reason, in a program whose whole promise is that what you see
-    is what is there.
+    `append(null)` puts the four letters n-u-l-l on the page. Both of these
+    shipped: the Files found selection bar read "3 files ticked. [Read 3
+    files] nullnull [Clear the ticks]", and Search printed "null" above the
+    results of every search that had no filter on it. In a program whose whole
+    promise is that what you see is what is there, a word appearing out of
+    nowhere is not a cosmetic bug.
 
-    Only the top level of each call matters: a conditional nested inside an
-    el(...) argument is el's problem, and el handles it.
+    So `add()` in ui.js exists, and this test says to use it. Two shapes are
+    caught: a `x ? el(...) : null` argument, and a call to a function that can
+    return null. Only the top level of each call matters - a conditional
+    nested inside an el(...) argument is el's problem, and el handles it.
     """
     source = path.read_text(encoding="utf-8")
+    nullable = functions_that_can_return_nothing()
+
     for m in re.finditer(r"\.append\(", source):
+        line = source[:m.start()].count("\n") + 1
         for arg in top_level_arguments(source, m.end()):
-            assert not re.search(r":\s*null\s*$", arg.strip()), (
-                f"{path.name}:{source[:m.start()].count(chr(10)) + 1} appends a "
-                f"value that can be null; filter it or hand it to el()"
+            arg = arg.strip()
+            called = re.match(r"^(\w+)\(", arg)
+            nothing = re.search(r":\s*null\s*$", arg) or (
+                called and called.group(1) in nullable
             )
+            assert not nothing, (
+                f"{path.name}:{line} appends {arg[:40]!r}, which can be "
+                f"null - use add() from ui.js instead of append()"
+            )
+
+
+def test_the_nullable_check_finds_the_ones_that_are_there():
+    """Otherwise a parser that quietly matches nothing would pass forever."""
+    nullable = functions_that_can_return_nothing()
+
+    assert "chipRow" in nullable, "a function that plainly returns null"
+    assert "pager" in nullable, "its null is behind a destructured parameter list"
+    assert "resultsPager" in nullable, "it inherits null from pager"
+    assert "el" not in nullable
 
 
 # ---------------------------------------------------------------------------

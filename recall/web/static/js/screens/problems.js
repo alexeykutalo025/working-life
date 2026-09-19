@@ -10,8 +10,9 @@
 
 import { api } from '../api.js';
 import {
-  CARD_PAGE_SIZES, clear, el, empty, errorDialog, errorNotice, field, loading,
-  modal, monthName, mount, notice, num, pager, plural, setTitle, severityTag,
+  CARD_PAGE_SIZES, add, clear, el, empty, errorDialog, errorNotice, field,
+  loading, modal, monthName, mount, notice, num, pager, plural, setTitle,
+  severityTag,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -431,7 +432,7 @@ async function loadList() {
     host.append(section);
   }
 
-  host.append(pager({
+  add(host, pager({
     total: data.total,
     offset: state.offset,
     pageSize: state.pageSize,

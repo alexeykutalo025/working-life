@@ -21,6 +21,26 @@ export function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+/**
+ * Append children to a node, leaving out the ones that are not there.
+ *
+ * el() already drops a null child; Node.append does not - it turns null into
+ * the string "null" and puts it on the page. Every screen builds children
+ * conditionally ("a chip row, if any filter is on"), so every screen has
+ * somewhere this could happen, and it did: the Files found selection bar read
+ * "3 files ticked. [Read 3 files] nullnull [Clear the ticks]", and the Search
+ * screen printed "null" above the results whenever no filter was set.
+ *
+ * Use this instead of node.append wherever a child might not exist.
+ */
+export function add(node, ...children) {
+  for (const child of children.flat()) {
+    if (child === null || child === undefined || child === false) continue;
+    node.append(child instanceof Node ? child : document.createTextNode(String(child)));
+  }
+  return node;
+}
+
 export function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
   return node;

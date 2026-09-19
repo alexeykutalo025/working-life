@@ -13,8 +13,8 @@
 
 import { api } from '../api.js';
 import {
-  clear, el, empty, errorNotice, kindLabel, loading, modal, monthName, mount,
-  num, plural, setTitle,
+  add, clear, el, empty, errorNotice, kindLabel, loading, modal, monthName,
+  mount, num, plural, setTitle,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -64,7 +64,9 @@ async function draw() {
     return;
   }
 
-  host.append(
+  // add(), not append(): undatedPanel returns null when every record has a
+  // date, and append would print the word "null" where the panel would be.
+  add(host,
     breadcrumb(data),
     headline(data),
     el('div', { class: 'card' }, chart(data)),

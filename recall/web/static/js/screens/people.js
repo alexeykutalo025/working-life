@@ -11,9 +11,9 @@
 
 import { api } from '../api.js';
 import {
-  CARD_PAGE_SIZES, clear, date, dateRange, debounce, el, empty, errorDialog,
-  errorNotice, loading, modal, mount, notice, num, pager, plural, setTitle,
-  stat, tabs, tag,
+  CARD_PAGE_SIZES, add, clear, date, dateRange, debounce, el, empty,
+  errorDialog, errorNotice, loading, modal, mount, notice, num, pager, plural,
+  setTitle, stat, tabs, tag,
 } from '../ui.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -173,7 +173,7 @@ async function loadList() {
     return;
   }
 
-  host.append(
+  add(host,
     el('div', { class: 'table-wrap' },
       el('table', {},
         el('thead', {}, el('tr', {},

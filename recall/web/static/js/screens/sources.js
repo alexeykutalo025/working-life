@@ -8,9 +8,9 @@
 import { api } from '../api.js';
 import { folderName, openFolderPicker } from '../folderpicker.js';
 import {
-  bytes, clear, date, debounce, el, empty, errorDialog, errorNotice, field,
-  loading, modal, mount, notice, num, pager, plural, progressBar, setTitle,
-  severityTag, stat, tag,
+  add, bytes, clear, date, debounce, el, empty, errorDialog, errorNotice,
+  field, loading, modal, mount, notice, num, pager, plural, progressBar,
+  setTitle, severityTag, stat, tag,
 } from '../ui.js';
 
 const state = {
@@ -620,7 +620,7 @@ async function refreshTable() {
   // two states says something untrue about the third.
   selectAll.indeterminate = here > 0 && here < data.rows.length;
 
-  host.append(
+  add(host,
     el('div', { class: 'table-wrap' },
       el('table', {},
         el('thead', {},

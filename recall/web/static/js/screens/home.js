@@ -6,8 +6,8 @@
 
 import { api } from '../api.js';
 import {
-  bytes, date, el, errorNotice, honest, kindLabel, mount, notice, num, plural,
-  setTitle,
+  add, bytes, date, el, errorNotice, honest, kindLabel, mount, notice, num,
+  plural, setTitle,
 } from '../ui.js';
 
 export async function render() {
@@ -34,7 +34,9 @@ export async function render() {
     return;
   }
 
-  root.append(
+  // add(), not append(): four of these return null when there is nothing to
+  // show, and append would put the word "null" on the page.
+  add(root,
     headline(data),
     kindCards(data),
     undatedPanel(data),

@@ -6,8 +6,8 @@
 
 import { api } from '../api.js';
 import {
-  clear, date, debounce, el, empty, errorNotice, kindLabel, loading, mount,
-  num, pager, plural, setTitle, tag,
+  add, clear, date, debounce, el, empty, errorNotice, kindLabel, loading,
+  mount, num, pager, plural, setTitle, tag,
 } from '../ui.js';
 
 // --- what the user chose last time ----------------------------------------
@@ -618,7 +618,9 @@ async function runSearch() {
     header.append(el('a', { class: 'health__link', href: '#/problems' }, 'Why?'));
   }
   host.append(header);
-  host.append(chipRow());
+  // chipRow is null when nothing is narrowing the results, which is most of
+  // the time - and append printed that null above every unfiltered search.
+  add(host, chipRow());
   syncFilterChrome();
 
   if (!data.results.length) {
@@ -642,8 +644,7 @@ async function runSearch() {
     return;
   }
 
-  host.append(viewSwitch());
-  host.append(exportBar(total.value));
+  add(host, viewSwitch(), exportBar(total.value));
 
   if (state.view === 'table') {
     const table = el('div', { id: 'search-table' }, loading('Building the table'));
@@ -654,9 +655,7 @@ async function runSearch() {
 
   const list = el('div', { class: 'stack' });
   data.results.forEach((result, index) => list.append(resultCard(result, index)));
-  host.append(list);
-
-  host.append(resultsPager(total.value));
+  add(host, list, resultsPager(total.value));
 }
 
 /** The shared pager, wired to the search's own offset. */
@@ -821,7 +820,7 @@ function renderTable(host) {
   const kind = data.showing || '';
   const shown = data.columns.filter((c) => !hiddenColumns(kind).has(c));
 
-  host.append(columnPanel(host, data, kind, shown));
+  add(host, columnPanel(host, data, kind, shown));
 
   const head = el('tr', {});
   for (const column of shown) {
@@ -854,7 +853,7 @@ function renderTable(host) {
   state.results = data.rows.map((r) => ({ id: r.item_id }));
   state.selected = -1;
 
-  host.append(
+  add(host,
     el('div', { class: 'table-wrap' },
       el('table', { class: 'table--columns' }, el('thead', {}, head), body)),
     el('p', { class: 'muted mt-3' },
