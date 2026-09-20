@@ -76,12 +76,25 @@ follow_symlinks = false
 # this computer. Opening one makes Windows download it, which can be slow and
 # can cost money on a metered connection.
 #
-# Recall NEVER downloads them on its own. It lists them and waits for you to
-# ask, on the Sources screen, with the total download size shown first.
-# Setting this to true would still require you to click; it only pre-ticks.
+# Recall never downloads them on its own. It lists them and waits for you to
+# ask - either with "Find every Outlook file and read it into the archive",
+# which shows the whole cost in one dialog before it starts, or by ticking
+# individual files and using the Download button.
+#
+# What comes down is copied into workdir/cloud and kept there, so a file is
+# never downloaded twice, and it stays readable after OneDrive puts the
+# original back in the cloud. Reading a cloud file also fills in the OneDrive
+# original, so while it works you need about twice the download size free.
+# Recall checks that first and says so.
+
+# No longer used. Downloading is decided in the dialog, which shows the size
+# before anything starts. Kept so that existing config files still load.
 auto_hydrate = false
 
-# Refuse to download a single batch larger than this, as a safety net.
+# Refuse to download a single batch larger than this, as a safety net. This
+# applies to the Download button for files you have ticked. The one-pass
+# dialog does not use it, because there you have already been shown and agreed
+# to the exact total.
 max_hydrate_batch_gb = 5
 
 

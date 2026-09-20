@@ -16,7 +16,7 @@ never presented as complete.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 from ..models import SEVERITY_ORDER, Severity
@@ -129,7 +129,9 @@ def qualifiers_for(
 
     ``source_ids`` restricts to findings about those files. ``period_start`` and
     ``period_end`` are 'YYYY-MM' bounds; a coverage finding overlapping the
-    range qualifies a count over that range.
+    range qualifies a count over that range. ``kinds`` says the count covers
+    only those kinds of record, which keeps the reasons and drops the estimate -
+    see the note at the end of this function for why.
     """
     out: list[Qualifier] = []
     codes = list(_COUNT_AFFECTING)
@@ -197,6 +199,23 @@ def qualifiers_for(
         )
 
     out.sort(key=lambda q: SEVERITY_ORDER.get(q.severity, 9))
+
+    if kinds:
+        # No reason a count is short can be pinned to one kind of record. A file
+        # that could not be read may have held messages, appointments or both,
+        # and a gap month is empty of every kind at once - neither a finding nor
+        # a source file carries a kind to divide the loss by.
+        #
+        # The reasons still hold for a count over one kind: it really may be
+        # short, so they stay and the number keeps its marker. The estimate does
+        # not. It is for the archive as a whole, and putting it under each kind
+        # claims the same missing records once per kind - four cards each saying
+        # "about 146,426 more could not be read" for one archive that is short
+        # 146,426. A screen that overstates what is missing is as dishonest as
+        # one that hides it, so the kind count carries the reason without a
+        # number it cannot stand behind.
+        out = [replace(q, estimated_loss=None) for q in out]
+
     return out
 
 

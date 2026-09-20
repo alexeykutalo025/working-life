@@ -25,7 +25,7 @@ log = get_logger("api.jobs")
 
 @dataclass
 class JobStatus:
-    kind: str = ""                 # scan | extract | hydrate | index | audit
+    kind: str = ""                 # scan | extract | hydrate | index | audit | read_all
     state: str = "idle"            # idle|running|done|canceled|failed
     started_utc: str | None = None
     finished_utc: str | None = None
@@ -34,6 +34,15 @@ class JobStatus:
     done: int = 0
     total: int | None = None       # None = not knowable yet
     rate_per_sec: float | None = None
+    #: Which step of a multi-step job this is, and how many there are. Left
+    #: empty by the single-step jobs, which have nothing to say about it.
+    phase: str = ""
+    phase_index: int = 0
+    phase_count: int = 0
+    #: What `done` and `total` are counting. Downloading counts bytes, because
+    #: a job that is one twenty-gigabyte file would otherwise sit at "0 of 1"
+    #: for forty minutes and look as though it had hung.
+    unit: str = "files"
     error: str | None = None
     detail: dict[str, Any] = field(default_factory=dict)
 
@@ -71,6 +80,10 @@ class JobStatus:
             "done": self.done,
             "total": self.total,
             "rate_per_sec": round(self.rate_per_sec, 1) if self.rate_per_sec else None,
+            "phase": self.phase,
+            "phase_index": self.phase_index,
+            "phase_count": self.phase_count,
+            "unit": self.unit,
             "elapsed_sec": round(self.elapsed_sec, 1),
             "remaining_sec": (
                 round(self.remaining_sec) if self.remaining_sec is not None else None
@@ -108,7 +121,14 @@ class JobManager:
         if not self.running:
             return False
         self._cancel.set()
-        self.status.message = "Stopping cleanly - finishing what is part-written..."
+        # A download has nothing part-written worth keeping: the half-file is
+        # deleted, because a truncated mailbox that looks whole is worse than
+        # no mailbox. Anything that does keep part-written work says so itself.
+        self.status.message = (
+            "Stopping cleanly - finishing the step in hand..."
+            if self.status.phase == "downloading"
+            else "Stopping cleanly - finishing what is part-written..."
+        )
         log.info("Cancel requested for %s job", self.status.kind)
         return True
 
@@ -123,8 +143,11 @@ class JobManager:
     ) -> JobStatus:
         with self._lock:
             if self.running:
+                # Named by what it is doing, not by the internal kind. "A
+                # hydrate is already running" is not a sentence anyone outside
+                # this file should have to read.
                 raise JobBusy(
-                    f"A {self.status.kind} is already running. "
+                    "Something is already running. "
                     "Wait for it to finish, or stop it first."
                 )
             self._cancel = threading.Event()
@@ -187,6 +210,40 @@ class JobManager:
         elapsed = time.monotonic() - self._started_monotonic
         if elapsed > 0.5 and self.status.done:
             self.status.rate_per_sec = self.status.done / elapsed
+
+    def begin_phase(
+        self,
+        name: str,
+        *,
+        index: int,
+        count: int,
+        total: int | None = None,
+        unit: str = "files",
+        message: str = "",
+    ) -> None:
+        """Start a step of a multi-step job. The bar starts again from nothing.
+
+        The clock behind the rate restarts too, and that is the point of this
+        existing rather than callers just setting fields. ``rate_per_sec`` is
+        ``done / (now - started)``, so a reading step that follows a two-hour
+        download would be divided by those two hours and report a rate near
+        zero and a time remaining measured in days.
+        """
+        self.status.phase = name
+        self.status.phase_index = index
+        self.status.phase_count = count
+        self.status.unit = unit
+        self.status.done = 0
+        self.status.total = total
+        self.status.current = ""
+        self.status.rate_per_sec = None
+        if message:
+            self.status.message = message
+        self._started_monotonic = time.monotonic()
+
+    def set_detail(self, **detail: Any) -> None:
+        """Attach facts to the running job without touching its progress."""
+        self.status.detail.update(detail)
 
     def finish(self, message: str, **detail: Any) -> None:
         self.status.message = message

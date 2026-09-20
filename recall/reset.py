@@ -80,15 +80,28 @@ def reset_all(settings: Settings) -> str:
             p.unlink()
 
     blobs = _empty_blobs(settings.blobs_path)
+    # The downloaded copies go too. "Delete the whole archive" leaving eighty
+    # gigabytes of copied mailboxes behind is not what anyone means by it.
+    # reset_items deliberately keeps them: those were expensive to fetch, and
+    # re-reading them is exactly what that command is for.
+    copies = _empty_blobs(settings.cloud_path)
 
     # Recreate an empty archive so the next command finds a working database.
     conn = db_module.connect(settings.db_path)
     conn.close()
 
-    log.info("reset --all removed %d sources and %d items", sources, items)
+    log.info(
+        "reset --all removed %d sources, %d items and %d copies",
+        sources, items, copies,
+    )
     return (
         f"Deleted the whole archive: {sources:,} files found, {items:,} records, "
-        f"{blobs:,} saved attachments.\n"
+        f"{blobs:,} saved attachments"
+        + (
+            f", and {copies:,} file(s) Recall had downloaded from OneDrive"
+            if copies else ""
+        )
+        + ".\n"
         "Your original Outlook files were not touched.\n"
         "Run:  recall scan   to start again."
     )

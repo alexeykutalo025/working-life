@@ -24,9 +24,9 @@ CLASSES = {
     "unreadable_files": {
         "label": "Files that could not be read",
         "codes": [
-            "read_failure", "partial_parse", "needs_password", "orphaned_ost",
-            "zero_or_tiny", "empty_tree", "magic_mismatch", "backend_disagreement",
-            "attachment_unreadable",
+            "read_failure", "locked_but_read", "partial_parse", "needs_password",
+            "orphaned_ost", "zero_or_tiny", "empty_tree", "magic_mismatch",
+            "backend_disagreement", "attachment_unreadable",
         ],
     },
     "coverage_gaps": {

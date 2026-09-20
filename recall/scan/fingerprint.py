@@ -28,6 +28,17 @@ log = get_logger("scan.fingerprint")
 CHUNK_SIZE = 1024 * 1024  # 1 MB
 
 
+def new_digest():
+    """A fresh content digest.
+
+    One definition, because two places compute it: this module hashing a file
+    where it lies, and the OneDrive copier hashing a file as it streams past.
+    If those two ever disagreed, every downloaded file would look unlike its
+    own original and duplicate detection would quietly stop working.
+    """
+    return hashlib.blake2b(digest_size=32)
+
+
 class HashSkipped(Exception):
     """Deliberately not hashed. ``reason`` says which rule applied."""
 
@@ -92,7 +103,7 @@ def hash_file(
             ),
         )
 
-    digest = hashlib.blake2b(digest_size=32)
+    digest = new_digest()
     read = 0
     try:
         with open(path, "rb") as fh:

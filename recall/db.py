@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Schema, verbatim from build spec section 4.
@@ -225,6 +225,17 @@ CREATE VIRTUAL TABLE items_fts USING fts5(
 # ---------------------------------------------------------------------------
 
 ADDITIONS_SQL = """
+-- A cloud-only file cannot be read where it sits without downloading it, so
+-- Recall keeps its own copy under workdir/cloud and reads that instead. The
+-- original path stays in source_files.path, because that is the name the user
+-- knows the file by; these three columns say where the copy is and when it
+-- arrived. Stated as ALTER TABLE rather than inline in SCHEMA_SQL so that a
+-- fresh archive and an upgraded one run the same statements - see _MIGRATIONS.
+ALTER TABLE source_files ADD COLUMN local_copy_path TEXT;
+ALTER TABLE source_files ADD COLUMN local_copy_bytes INTEGER;
+ALTER TABLE source_files ADD COLUMN local_copy_utc TEXT;
+CREATE INDEX idx_source_files_copy ON source_files(local_copy_path);
+
 -- The spec's UNIQUE(code, source_file_id, item_id, person_id, period_start) does
 -- not dedupe rows containing NULLs, and most findings contain NULLs there. This
 -- index makes "run the audit twice, get one finding" actually true.
@@ -321,6 +332,21 @@ def connect(db_path: str | Path, *, read_only: bool = False) -> sqlite3.Connecti
     return conn
 
 
+#: Upgrade steps for an archive that already exists, keyed by the version they
+#: produce. A fresh archive never runs these - it gets the same statements as
+#: part of ADDITIONS_SQL - so the two paths cannot drift apart. Every entry is
+#: append-only: once a version has shipped, its statements are frozen.
+_MIGRATIONS: dict[int, tuple[str, ...]] = {
+    2: (
+        "ALTER TABLE source_files ADD COLUMN local_copy_path TEXT",
+        "ALTER TABLE source_files ADD COLUMN local_copy_bytes INTEGER",
+        "ALTER TABLE source_files ADD COLUMN local_copy_utc TEXT",
+        "CREATE INDEX IF NOT EXISTS idx_source_files_copy "
+        "ON source_files(local_copy_path)",
+    ),
+}
+
+
 def migrate(conn: sqlite3.Connection) -> int:
     """Bring an archive up to SCHEMA_VERSION. Returns the version in force."""
     have_tables = {
@@ -351,7 +377,24 @@ def migrate(conn: sqlite3.Connection) -> int:
             f"(schema {current}, this program understands {SCHEMA_VERSION}). "
             "Update Recall, or use a different working folder."
         )
-    # Future versions append their upgrade steps here.
+
+    for version in sorted(v for v in _MIGRATIONS if v > current):
+        # SQLite runs DDL inside a transaction, so a half-applied upgrade is not
+        # a state this can end in: either every statement lands and the version
+        # is recorded, or the archive is exactly as it was.
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            for statement in _MIGRATIONS[version]:
+                conn.execute(statement)
+            conn.execute(
+                "INSERT INTO schema_migrations(version) VALUES (?)", (version,)
+            )
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+        conn.execute("COMMIT")
+        current = version
+
     return current
 
 
@@ -396,6 +439,34 @@ IN_IDS = "IN (SELECT value FROM json_each(?))"
 def ids_param(ids) -> str:
     """The parameter that goes with :data:`IN_IDS`."""
     return json.dumps([int(i) for i in ids])
+
+
+#: A source row whose bytes Recall can actually get at right now, as a WHERE
+#: clause fragment.
+#:
+#: Three columns decide it and they are easy to get wrong separately:
+#: ``is_placeholder`` says the bytes are in the cloud, ``is_readable`` says
+#: Windows would not open the file, and ``local_copy_path`` says Recall already
+#: took its own copy and neither of the other two matters any more. Written once
+#: here because a query that forgets the third one silently stops reading every
+#: file that was downloaded - and a file nothing tries to read is a file the
+#: archive is short of without ever saying so.
+REACHABLE_SQL = (
+    "(local_copy_path IS NOT NULL OR (is_placeholder = 0 AND is_readable = 1))"
+)
+
+#: Still in the cloud, with no copy here. What the user means by "cloud-only".
+CLOUD_ONLY_SQL = "(is_placeholder = 1 AND local_copy_path IS NULL)"
+
+
+def read_path(row) -> Path:
+    """Where Recall opens this file.
+
+    The copy when there is one, the original otherwise. The original path is
+    still what the user is shown - they recognise their own OneDrive folder, not
+    a workdir full of numbered directories.
+    """
+    return Path(row["local_copy_path"] or row["path"])
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:

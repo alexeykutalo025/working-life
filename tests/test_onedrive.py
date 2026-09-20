@@ -13,12 +13,16 @@ from types import SimpleNamespace
 
 import pytest
 
+from recall.scan import onedrive as onedrive_module
+from recall.scan.fingerprint import hash_file
 from recall.scan.onedrive import (
     FILE_ATTRIBUTE_OFFLINE,
     FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS,
     FILE_ATTRIBUTE_RECALL_ON_OPEN,
     HydrationRefused,
     assert_not_onedrive,
+    copy_destination,
+    hydrate_to,
     is_onedrive_path,
     is_placeholder,
     placeholder_reason,
@@ -150,3 +154,209 @@ def test_plan_refuses_when_it_would_not_fit(tmp_path: Path):
     paths = [tmp_path / "huge.pst"]
     plan = plan_hydration(paths, {str(paths[0]): 10**15})
     assert plan.fits_on_disk is False
+
+
+# --- downloading a copy, and keeping it -----------------------------------
+#
+# These use real files rather than mocked attribute bits. The point of
+# hydrate_to is what it does with bytes on disk - what it leaves behind when
+# it is interrupted, and what it refuses to keep - and none of that can be
+# checked against a placeholder that does not exist.
+
+
+def test_copy_lands_in_the_workdir_and_matches_the_original(tmp_path: Path):
+    src = tmp_path / "mail.pst"
+    src.write_bytes(b"x" * 300_000)
+    dest = copy_destination(tmp_path / "cloud", 12, src)
+
+    result = hydrate_to(src, dest, expected_size=src.stat().st_size)
+
+    assert result.ok
+    assert result.bytes_copied == 300_000
+    assert dest.read_bytes() == src.read_bytes()
+    assert dest.parent.name == "000012"
+    assert dest.name == "mail.pst"
+
+
+def test_the_copy_is_hashed_on_the_way_past(tmp_path: Path):
+    """One read, not two. Hashing afterwards would re-read twenty gigabytes."""
+    src = tmp_path / "mail.pst"
+    src.write_bytes(b"contents worth hashing" * 500)
+    dest = copy_destination(tmp_path / "cloud", 1, src)
+
+    result = hydrate_to(src, dest, expected_size=src.stat().st_size)
+
+    assert result.content_hash == hash_file(src).content_hash
+
+
+def test_progress_is_reported_while_a_long_file_comes_down(tmp_path: Path):
+    src = tmp_path / "big.pst"
+    src.write_bytes(b"y" * 3_000_000)
+    dest = copy_destination(tmp_path / "cloud", 2, src)
+
+    seen: list[int] = []
+    hydrate_to(
+        src, dest, expected_size=src.stat().st_size,
+        chunk_size=1024 * 1024, progress=seen.append,
+    )
+
+    assert len(seen) >= 3, "a 3 MB file in 1 MB chunks must report more than once"
+    assert seen == sorted(seen)
+    assert seen[-1] == 3_000_000
+
+
+def test_stopping_midway_leaves_nothing_behind(tmp_path: Path):
+    """Not the copy, and not the part-file either.
+
+    A half-copied mailbox that looks complete is worse than no copy at all:
+    it parses, it yields some records, and nothing anywhere says the rest of
+    them were never there.
+    """
+    src = tmp_path / "big.pst"
+    src.write_bytes(b"z" * 3_000_000)
+    dest = copy_destination(tmp_path / "cloud", 3, src)
+
+    calls = {"n": 0}
+
+    def cancel() -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1
+
+    result = hydrate_to(
+        src, dest, expected_size=src.stat().st_size,
+        chunk_size=1024 * 1024, cancel=cancel,
+    )
+
+    assert result.canceled is True
+    assert not dest.exists()
+    assert list(dest.parent.glob("*.part")) == []
+
+
+def test_a_short_download_is_an_error_and_is_not_kept(tmp_path: Path):
+    """OneDrive can fail by handing back fewer bytes instead of raising."""
+    src = tmp_path / "mail.pst"
+    src.write_bytes(b"w" * 1000)
+    dest = copy_destination(tmp_path / "cloud", 4, src)
+
+    result = hydrate_to(src, dest, expected_size=5000)
+
+    assert result.error is not None
+    assert "stopped short" in result.error
+    assert not dest.exists()
+    assert list(dest.parent.glob("*.part")) == []
+
+
+def test_a_copy_already_here_is_not_downloaded_again(tmp_path: Path):
+    src = tmp_path / "mail.pst"
+    src.write_bytes(b"v" * 2000)
+    dest = copy_destination(tmp_path / "cloud", 5, src)
+    hydrate_to(src, dest, expected_size=2000)
+
+    seen: list[int] = []
+    again = hydrate_to(src, dest, expected_size=2000, progress=seen.append)
+
+    assert again.reused_existing is True
+    assert again.bytes_copied == 0
+    assert seen == [], "nothing should have been read at all"
+
+
+def test_a_stale_part_file_is_discarded_rather_than_resumed(tmp_path: Path):
+    """Appending to a part-file needs the download to restart at exactly the
+    right offset. Getting that wrong gives a corrupt mailbox that reads as a
+    short one, so it starts again instead."""
+    src = tmp_path / "mail.pst"
+    src.write_bytes(b"u" * 4000)
+    dest = copy_destination(tmp_path / "cloud", 6, src)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.with_name(dest.name + ".part").write_bytes(b"rubbish from last time")
+
+    result = hydrate_to(src, dest, expected_size=4000)
+
+    assert result.ok
+    assert dest.read_bytes() == src.read_bytes()
+
+
+def test_it_refuses_to_copy_into_onedrive(tmp_path: Path, monkeypatch):
+    """A workdir inside OneDrive would upload every copy straight back."""
+    monkeypatch.setenv("OneDrive", str(tmp_path / "OneDrive"))
+    src = tmp_path / "mail.pst"
+    src.write_bytes(b"t" * 100)
+
+    with pytest.raises(HydrationRefused):
+        hydrate_to(src, tmp_path / "OneDrive" / "cloud" / "mail.pst")
+
+
+def test_a_very_long_name_falls_back_to_the_id(tmp_path: Path):
+    """Windows still refuses paths past 260 characters.
+
+    Saved messages are named after the subject line, so a 200-character file
+    name is an ordinary thing to find rather than a contrived one.
+    """
+    src = tmp_path / ("Re FW " + "a very long subject line " * 9 + ".msg")
+    dest = copy_destination(tmp_path / "cloud", 77, src)
+
+    assert len(str(dest)) <= 250
+    assert dest.name == "000077.msg"
+
+
+def test_an_ordinary_name_is_kept(tmp_path: Path):
+    """The id is a fallback, not the normal case - the folder stays legible."""
+    dest = copy_destination(tmp_path / "cloud", 8, tmp_path / "Sent Items.dbx")
+    assert dest.name == "Sent Items.dbx"
+
+
+# --- what the download costs in disk --------------------------------------
+
+
+def test_one_drive_pays_twice_because_the_original_fills_in_too(tmp_path: Path):
+    """Reading a placeholder hydrates the OneDrive original as well as writing
+    the copy. Windows offers no way round it, so the plan says so up front
+    rather than running out of room at file 300."""
+    paths = [tmp_path / "a.pst"]
+    plan = plan_hydration(
+        paths, {str(paths[0]): 1000}, dest_dir=tmp_path / "workdir" / "cloud"
+    )
+
+    drive = (tmp_path.anchor or str(tmp_path)).lower()
+    assert plan.needed_by_drive[drive] == 2000
+    assert plan.needed_bytes == 2000
+    assert plan.total_bytes == 1000
+
+
+def test_two_drives_each_pay_once(tmp_path: Path, monkeypatch):
+    src = Path("Q:/mail/a.pst")
+    dest = Path("R:/workdir/cloud")
+    monkeypatch.setattr(
+        onedrive_module.shutil, "disk_usage",
+        lambda p: SimpleNamespace(total=0, used=0, free=10**12),
+    )
+
+    plan = plan_hydration([src], {str(src): 1000}, dest_dir=dest)
+
+    assert plan.needed_by_drive["q:\\"] == 1000
+    assert plan.needed_by_drive["r:\\"] == 1000
+    assert plan.needed_bytes == 1000
+
+
+def test_every_drive_is_measured_not_just_the_first(tmp_path: Path, monkeypatch):
+    """The free space used to be read off the first path's drive alone, so a
+    full second drive looked fine."""
+    free = {"q:\\": 10**12, "r:\\": 1}
+    monkeypatch.setattr(
+        onedrive_module.shutil, "disk_usage",
+        lambda p: SimpleNamespace(total=0, used=0, free=free[str(p).lower()]),
+    )
+
+    src = Path("Q:/mail/a.pst")
+    plan = plan_hydration([src], {str(src): 1000}, dest_dir=Path("R:/cloud"))
+
+    assert plan.fits_on_disk is False
+    assert plan.tight_drives == ["r:\\"]
+
+
+def test_downloading_nothing_always_fits(tmp_path: Path):
+    """An archive with no cloud files must not report "not enough room" for a
+    download of zero bytes, which would disable the button that starts
+    everything."""
+    plan = plan_hydration([], {}, dest_dir=tmp_path)
+    assert plan.fits_on_disk is True

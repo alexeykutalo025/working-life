@@ -32,6 +32,7 @@ CLASS_ORDER = [
 
 _CLASS_FOR_CODE = {
     "read_failure": "unreadable_files",
+    "locked_but_read": "unreadable_files",
     "partial_parse": "unreadable_files",
     "needs_password": "unreadable_files",
     "orphaned_ost": "unreadable_files",

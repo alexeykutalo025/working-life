@@ -249,3 +249,78 @@ def test_foreign_keys_cascade_participations(conn):
     assert conn.execute("SELECT COUNT(*) FROM participations").fetchone()[0] == 0
     # The person survives their messages being deleted.
     assert conn.execute("SELECT COUNT(*) FROM people").fetchone()[0] == 1
+
+
+# --- upgrading an archive made by an earlier version ----------------------
+
+
+def _version_one_archive(path):
+    """An archive as it was before local_copy_path existed."""
+    import re
+    import sqlite3
+
+    old_additions = re.sub(
+        r"-- A cloud-only file.*?ON source_files\(local_copy_path\);",
+        "",
+        db_module.ADDITIONS_SQL,
+        flags=re.S,
+    )
+    assert "local_copy_path" not in old_additions
+
+    conn = sqlite3.connect(path)
+    conn.row_factory = sqlite3.Row
+    conn.executescript("BEGIN;" + db_module.SCHEMA_SQL + old_additions + "COMMIT;")
+    conn.execute("INSERT INTO schema_migrations(version) VALUES (1)")
+    conn.commit()
+    return conn
+
+
+def test_an_old_archive_gains_the_copy_columns(tmp_path):
+    conn = _version_one_archive(tmp_path / "old.db")
+    conn.execute(
+        r"INSERT INTO source_files(path, ext, size_bytes) "r"VALUES ('C:\mail.pst', '.pst', 99)"
+    )
+    conn.commit()
+
+    assert db_module.migrate(conn) == db_module.SCHEMA_VERSION
+
+    columns = {r[1] for r in conn.execute("PRAGMA table_info(source_files)")}
+    assert {"local_copy_path", "local_copy_bytes", "local_copy_utc"} <= columns
+    # And the archive it was holding is still there.
+    assert conn.execute("SELECT path FROM source_files").fetchone()[0] == r"C:\mail.pst"
+
+
+def test_upgrading_twice_changes_nothing(tmp_path):
+    conn = _version_one_archive(tmp_path / "old.db")
+    db_module.migrate(conn)
+    db_module.migrate(conn)
+
+    versions = [r[0] for r in conn.execute("SELECT version FROM schema_migrations")]
+    assert sorted(versions) == [1, 2]
+
+
+def test_a_fresh_archive_and_an_upgraded_one_match(tmp_path):
+    """The two paths run the same statements, so they cannot drift apart.
+
+    This is the test that catches a column added to the schema and forgotten in
+    the upgrade, which would work perfectly on the developer's machine and fail
+    on every archive that already exists.
+    """
+    upgraded = _version_one_archive(tmp_path / "old.db")
+    db_module.migrate(upgraded)
+    fresh = db_module.connect(tmp_path / "new.db")
+
+    def columns(conn):
+        return [(r[1], r[2]) for r in conn.execute("PRAGMA table_info(source_files)")]
+
+    assert columns(upgraded) == columns(fresh)
+
+
+def test_an_archive_from_a_newer_recall_is_refused(tmp_path):
+    conn = db_module.connect(tmp_path / "future.db")
+    conn.execute(
+        "INSERT INTO schema_migrations(version) VALUES (?)",
+        (db_module.SCHEMA_VERSION + 1,),
+    )
+    with pytest.raises(db_module.DatabaseError):
+        db_module.migrate(conn)

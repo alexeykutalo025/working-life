@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .config import Settings
-from .db import log_error, transaction
+from .db import REACHABLE_SQL, log_error, read_path, transaction
 from .integrity.engine import Finding, record_finding
 from .integrity.sources import (
     record_claimed_count,
@@ -40,6 +40,7 @@ from .normalize.dedup import dedup_key_for
 from .normalize.attachments import BlobStore, store_attachments
 from .normalize.people import PeopleResolver
 from .parsers.base import load_all_parsers, parser_for
+from .parsers.pst_backend import LOCKED_BY_OUTLOOK_SQL, looks_locked_by_outlook
 
 log = get_logger("extract")
 
@@ -185,8 +186,14 @@ class Extractor:
         return self.progress
 
     def _sources_to_read(self, source_ids, resume: bool) -> list:
+        # Three kinds of file are worth opening: ones that are simply here,
+        # ones Recall has taken its own copy of, and Outlook data files that
+        # something is holding open - those last because Outlook itself can
+        # usually read a store it has mounted, and a file the user can see in
+        # Outlook is a file they expect to find in the archive.
         sql = [
-            "SELECT * FROM source_files WHERE is_placeholder = 0 AND is_readable = 1"
+            "SELECT * FROM source_files WHERE "
+            f"({REACHABLE_SQL} OR {LOCKED_BY_OUTLOOK_SQL})"
         ]
         params: list = []
         if source_ids:
@@ -204,12 +211,24 @@ class Extractor:
 
     def _read_one(self, source: dict, kinds: frozenset[str], sample: int) -> None:
         source_id = int(source["id"])
+        # Two paths, two jobs. `path` is the name the user knows the file by and
+        # is what every message, log line and finding says. `open_path` is where
+        # the bytes actually are, which for a downloaded cloud file is Recall's
+        # own copy. Showing someone a workdir path when they asked about a file
+        # in their OneDrive folder helps nobody.
         path = Path(source["path"])
+        locked_outlook = not source["is_readable"] and looks_locked_by_outlook(
+            source["ext"], source["lock_error"]
+        )
+        # A store Outlook is holding open must be opened where Outlook has it.
+        # The COM backend finds it by matching the store's own FilePath, so a
+        # copy - if one somehow existed - would not be recognised.
+        open_path = path if locked_outlook else read_path(source)
         self.progress.current_file = str(path)
         self.progress.current_folder = ""
         self._report()
 
-        parser_cls = parser_for(path, source["ext"])
+        parser_cls = parser_for(open_path, source["ext"])
         if parser_cls is None:
             self.conn.execute(
                 "UPDATE source_files SET parse_state = 'skipped', parse_error = ? WHERE id = ?",
@@ -218,7 +237,7 @@ class Extractor:
             log.info("No reader for %s, skipping", path)
             return
 
-        if not path.exists():
+        if not open_path.exists():
             self._fail(
                 source_id,
                 path,
@@ -236,13 +255,23 @@ class Extractor:
         limit = sample or self.settings.extract.sample_limit
         kwargs: dict = {"sample_limit": limit}
         if parser_cls.name == "pst":
-            kwargs["preferred"] = self.settings.extract.pst_backend
-            kwargs["cross_check"] = self.settings.extract.cross_check_backends and not limit
+            # A locked store goes straight to Outlook. The built-in reader
+            # cannot open a file Windows will not hand over, so letting "auto"
+            # try it first only spends the stall timeout arriving at the answer
+            # we already have - and there is nothing to cross-check against.
+            kwargs["preferred"] = (
+                "com" if locked_outlook else self.settings.extract.pst_backend
+            )
+            kwargs["cross_check"] = (
+                self.settings.extract.cross_check_backends
+                and not limit
+                and not locked_outlook
+            )
             kwargs["com_stall_timeout"] = self.settings.extract.com_stall_timeout_seconds
 
         record_sampled(self.conn, source_id, limit)
 
-        parser = parser_cls(path, **kwargs)
+        parser = parser_cls(open_path, **kwargs)
         written = 0
         seen = 0
         batch: list[ParsedItem] = []
@@ -282,6 +311,24 @@ class Extractor:
                 pass
 
         self._record_outcome(source_id, parser, written)
+
+        # A parser can finish without raising and still have read nothing: every
+        # backend declined, or the only one that could have worked is not
+        # installed. PstParser does exactly that when Outlook is missing - it
+        # sets outcome.error and returns, and a generator that returns is not an
+        # error anyone catches. Recording that as 'done' would put a file in the
+        # archive as read, holding no records, with nothing anywhere saying it
+        # was not read. A short archive that looks complete is the one outcome
+        # this program is built to prevent, so it is a failure.
+        if seen == 0 and written == 0 and parser.outcome.error:
+            self._fail(
+                source_id,
+                path,
+                parser.outcome.error,
+                parser.outcome.error_detail or parser.outcome.error,
+            )
+            return
+
         self._finish_source(source_id, parser, written, canceled=self.cancel.is_set())
         self.progress.items_written += written
         log.info("%s: %d records read, %d new", path.name, seen, written)

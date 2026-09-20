@@ -154,6 +154,53 @@ def test_an_explained_gap_stops_nagging_the_totals(conn):
     assert count_items(conn).qualified is False
 
 
+# --- a count over one kind ------------------------------------------------
+
+
+def test_a_kind_count_keeps_the_reason_without_the_archive_estimate(conn):
+    """A file that could not be read may have held any kind, so the estimate
+    cannot be handed to one of them."""
+    source_id = _source(conn)
+    _item(conn, "m1", kind="message")
+
+    record_finding(conn, Finding(
+        code="partial_parse", severity="critical", title="x",
+        source_file_id=source_id, estimated_loss=8000,
+    ))
+
+    count = count_items(conn, kind="message", label="messages")
+    assert count.qualified is True, "the count really is short, and says so"
+    assert count.estimated_missing is None
+    assert "could not be read in full" in count.sentence()
+    assert "8,000" not in count.sentence()
+
+
+def test_the_kind_counts_do_not_repeat_the_whole_estimate_each(conn):
+    """The Home cards once each claimed the archive's whole loss, so four
+    cards said 8,000 were missing from an archive short 8,000."""
+    source_id = _source(conn)
+    _item(conn, "m1", kind="message")
+    _item(conn, "e1", kind="event")
+    _item(conn, "c1", kind="contact")
+
+    record_finding(conn, Finding(
+        code="partial_parse", severity="critical", title="x",
+        source_file_id=source_id, estimated_loss=8000,
+    ))
+
+    per_kind = [
+        count_items(conn, kind=k).estimated_missing or 0
+        for k in ("message", "event", "contact")
+    ]
+    assert sum(per_kind) == 0
+    assert count_items(conn).estimated_missing == 8000, "the total still says it"
+
+
+def test_the_unqualified_kind_count_is_still_unqualified(conn):
+    _item(conn, "m1", kind="message")
+    assert count_items(conn, kind="message").qualified is False
+
+
 # --- undated --------------------------------------------------------------
 
 

@@ -175,6 +175,7 @@ function detailPanel(data) {
     ['Files that could not be read', num(s.failed)],
     ['Files that are duplicates of another', num(s.duplicates)],
     ['Files stored in the cloud only', num(s.cloud_only)],
+    ['Cloud files Recall has copied here', num(s.cloud_copied)],
     ['Total size of those files', bytes(s.total_bytes)],
     ['People in the archive', num(data.people)],
     ['Attachments kept', num(a.n)],
@@ -227,8 +228,8 @@ function gettingStarted() {
         'only, and opens nothing.'),
     ),
     el('div', { class: 'btn-row mb-5' },
-      el('a', { class: 'btn btn--primary btn--big', href: '#/sources' },
-        'Find Outlook files on this computer'),
+      el('a', { class: 'btn btn--primary btn--big', href: '#/sources?start=1' },
+        'Find every Outlook file and read it into the archive'),
     ),
     el('div', { class: 'card' },
       el('h2', { class: 'card__title mt-0' }, 'What Recall is going to do'),
@@ -237,10 +238,13 @@ function gettingStarted() {
           'Recall searches the drives you tick for anything Outlook made — ' +
           '.pst, .ost, .msg and a dozen older formats. It reads only names, ' +
           'sizes and dates. It opens nothing.'),
-        step('Show you what it found.',
-          'A list, biggest first, marking duplicates, files stored in the ' +
-          'cloud, and files Outlook is holding open.'),
-        step('Read the ones you choose.',
+        step('Bring down anything stored in the cloud only.',
+          'Those files look like files but their contents are not on this ' +
+          'computer. Recall copies each one into its own folder and keeps it ' +
+          'there, so it is readable now and re-readable later without ' +
+          'downloading again. Your OneDrive copy is not touched, and you are ' +
+          'shown the total size before anything is downloaded.'),
+        step('Read them.',
           'Mail, calendar entries, contacts and attachments come out into one ' +
           'searchable archive. You can stop at any time and carry on later.'),
         step('Tell you what it could not read.',

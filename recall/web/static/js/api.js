@@ -92,6 +92,14 @@ export const api = {
       body: JSON.stringify({ ids, confirm: true }),
     }),
 
+  // Find, download and read, as one pass.
+  readAllPlan: () => request('/api/readall/plan'),
+  readAll: (options) =>
+    request('/api/readall', {
+      method: 'POST',
+      body: JSON.stringify({ confirm: true, ...options }),
+    }),
+
   // --- timeline, eras, exports ---
   timeline: (level = 'year', year = null, month = null) => {
     const qs = new URLSearchParams({ level });

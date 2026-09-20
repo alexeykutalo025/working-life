@@ -31,6 +31,8 @@ const state = {
 };
 
 let pollTimer = null;
+// True while any job is running, so the one-pass button cannot start a second.
+let jobRunning = false;
 
 /** Anything that changes which files match starts again at the first page. */
 function reload() {
@@ -38,7 +40,7 @@ function reload() {
   return refreshTable();
 }
 
-export async function render() {
+export async function render({ params } = {}) {
   setTitle('Files found');
 
   const root = el('div', {},
@@ -54,8 +56,16 @@ export async function render() {
   mount(root);
 
   renderControls();
-  await Promise.all([refreshSummary(), refreshTable()]);
+  // The job card goes up before the two list queries. Coming back to this
+  // screen while a pass is running used to mean waiting for a summary and a
+  // page of rows - both querying a database being actively written - before
+  // anything said that something was happening at all.
   await pollJob();
+  await Promise.all([refreshSummary(), refreshTable()]);
+
+  // Home links here with ?start=1 to open the dialog straight away, so a first
+  // run is one click from the dashboard rather than two.
+  if (params && params.get && params.get('start') && !jobRunning) openFullPass();
 
   return () => { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } };
 }
@@ -132,17 +142,41 @@ function renderControls() {
   clear(host);
 
   host.append(
+    el('div', { class: 'card mb-5' },
+      el('h2', { class: 'card__title mt-0' }, 'Everything, in one go'),
+      el('button', {
+        class: 'btn btn--primary btn--big btn--block',
+        type: 'button',
+        disabled: jobRunning ? true : null,
+        onclick: openFullPass,
+      }, 'Find every Outlook file and read it into the archive'),
+      jobRunning
+        ? el('p', { class: 'muted small mt-3 mb-0' },
+            'Something is running below. This can start again once it has finished.')
+        : el('p', { class: 'muted small mt-3 mb-0' },
+            'Recall searches the drives you choose, brings down anything stored ' +
+            'in the cloud only, and reads the lot into the archive. You will be ' +
+            'shown exactly what that costs before anything starts, and you can ' +
+            'stop at any time.'),
+    ),
+
+    el('details', { class: 'mb-5' },
+      el('summary', {}, 'Do it step by step instead'),
+      el('div', { class: 'btn-row mt-3' },
+        el('button', {
+          class: 'btn btn--big',
+          type: 'button',
+          onclick: openDriveChooser,
+        }, 'Find Outlook files on this computer'),
+        el('button', {
+          class: 'btn btn--big',
+          type: 'button',
+          onclick: () => openReadDialog(null),
+        }, 'Read them into the archive'),
+      ),
+    ),
+
     el('div', { class: 'btn-row mb-5' },
-      el('button', {
-        class: 'btn btn--primary btn--big',
-        type: 'button',
-        onclick: openDriveChooser,
-      }, 'Find Outlook files on this computer'),
-      el('button', {
-        class: 'btn btn--big',
-        type: 'button',
-        onclick: () => openReadDialog(null),
-      }, 'Read them into the archive'),
       el('button', {
         class: 'btn',
         type: 'button',
@@ -164,6 +198,7 @@ function renderControls() {
           const v = document.getElementById('filter-kind').value;
           state.filters.only_duplicates = v === 'duplicates';
           state.filters.only_placeholders = v === 'cloud';
+          state.filters.only_copied = v === 'copied';
           state.filters.only_problems = v === 'problems';
           state.filters.state = v === 'unread' ? 'pending' : (v === 'read' ? 'done' : '');
           reload();
@@ -174,6 +209,7 @@ function renderControls() {
         el('option', { value: 'read' }, 'Already read'),
         el('option', { value: 'duplicates' }, 'Duplicates only'),
         el('option', { value: 'cloud' }, 'Cloud-only files'),
+        el('option', { value: 'copied' }, 'Files Recall has its own copy of'),
         el('option', { value: 'problems' }, 'Files with problems'),
       )),
       field('Where it is', el('select', {
@@ -193,6 +229,203 @@ function renderControls() {
 
     el('div', { class: 'btn-row mb-5', id: 'selection-actions' }),
   );
+}
+
+// --- find, download and read, in one pass ---------------------------------
+//
+// One dialog, shown once, carrying the whole cost: what comes down from the
+// cloud, what that needs in disk, and what will be read. Everything after the
+// button is unattended. The cost is still shown before a byte moves - that
+// rule has not changed, only the number of times the user has to agree to it.
+
+async function openFullPass() {
+  let plan;
+  try {
+    plan = await api.readAllPlan();
+  } catch (err) {
+    errorDialog(err);
+    return;
+  }
+
+  const d = plan.disk;
+  const willDownload = plan.download.count > 0;
+
+  const skipCloud = el('input', { type: 'checkbox' });
+  const sample = el('input', { type: 'checkbox' });
+  const confirm = el('button', { class: 'btn btn--primary', type: 'button' });
+
+  // One rule, and only one: there is no room. Nothing else stops the pass -
+  // not a locked file, not a missing Outlook, not an empty list. An empty list
+  // is precisely what this is for.
+  const blocked = () => !skipCloud.checked && willDownload && !d.fits;
+
+  function syncConfirm() {
+    confirm.disabled = blocked();
+    if (sample.checked) confirm.textContent = 'Start — read a sample of each file';
+    else if (skipCloud.checked || !willDownload) {
+      confirm.textContent = 'Start — search and read';
+    } else {
+      confirm.textContent = `Start — download ${bytes(plan.download.bytes)} and read everything`;
+    }
+  }
+  skipCloud.onchange = syncConfirm;
+  sample.onchange = syncConfirm;
+
+  const body = [];
+
+  if (willDownload && !d.fits) {
+    body.push(notice('error', 'Not enough room on this drive',
+      `Bringing these down needs about ${bytes(d.needed_bytes)} of room while it ` +
+      `works, and there is ${bytes(d.free_bytes)} free. Free up some space, or ` +
+      'tick the box below to leave the cloud files where they are this time.'));
+  }
+
+  body.push(el('p', {}, plan.sentence));
+
+  if (!plan.scan.last_scan_utc) {
+    body.push(notice('info', 'Recall has not searched this computer yet',
+      'The numbers below cannot be worked out until it has. Recall searches ' +
+      'first, then downloads, then reads.'));
+  }
+
+  body.push(
+    el('p', { class: 'strong mb-0' }, 'What will happen'),
+    el('ol', {},
+      el('li', {}, el('strong', {}, 'It searches. '),
+        'Names, sizes and dates only — no file is opened.'),
+      // Only promised when there is something to download. A step that will
+      // not happen is as misleading in a list as a cost that is not real.
+      willDownload
+        ? el('li', {}, el('strong', {}, 'It downloads. '),
+            'Anything stored in the cloud only is copied into Recall’s own ' +
+            'folder and kept there, so it never has to be downloaded twice.')
+        : null,
+      el('li', {}, el('strong', {}, 'It reads. '),
+        'Mail, calendar entries, contacts and attachments go into the archive.'),
+    ),
+  );
+
+  const cards = [
+    willDownload
+      ? stat('Files to download', num(plan.download.count), bytes(plan.download.bytes))
+      : null,
+    willDownload
+      ? stat('Room needed while it works', bytes(d.needed_bytes),
+          d.doubles_up ? 'about twice the download size' : null,
+          { alarming: !d.fits })
+      : null,
+    willDownload ? stat('Room free', bytes(d.free_bytes)) : null,
+    stat('Files to read', num(plan.read.count), bytes(plan.read.bytes)),
+  ].filter(Boolean);
+  body.push(el('div', { class: willDownload ? 'grid grid--4' : 'grid grid--3' }, ...cards));
+
+  if (willDownload && d.doubles_up) {
+    body.push(
+      el('p', {},
+        'Each cloud file is copied into Recall’s own folder and kept. Windows ' +
+        'insists on filling in the OneDrive original on this computer first, and ' +
+        'there is no way round that, so for a while both copies are here. That is ' +
+        'why the room needed is about twice the download. Nothing is removed from ' +
+        'OneDrive, and your own files are never changed.'),
+      el('pre', { class: 'raw' }, d.dest_path),
+    );
+  }
+
+  if (plan.locked.outlook) {
+    body.push(notice('warning',
+      `${plural(plan.locked.outlook, 'file')} held open by Outlook`,
+      plan.locked.outlook_available
+        ? 'Windows will not let Recall open these directly, so Recall will ask ' +
+          'Outlook to read them instead. Leave Outlook running.'
+        : 'Outlook is not installed on this computer, so there is no other way ' +
+          'in. These will be skipped, and listed at the end.'));
+  }
+
+  if (willDownload) {
+    body.push(el('p', {},
+      'Downloading uses your internet connection, and may cost money on a ' +
+      'metered connection. Nothing is downloaded until you press the button below.'));
+  }
+
+  const est = plan.estimate;
+  body.push(el('p', {},
+    el('strong', {}, 'How long: '),
+    willDownload && est.download
+      ? `${est.download} to download, then ${est.read} to read. `
+      : `${est.read}. `,
+    el('span', { class: 'muted' }, est.note)));
+
+  if (willDownload) {
+    body.push(el('label', { class: 'check' }, skipCloud,
+      el('span', {},
+        'Leave the cloud files where they are this time',
+        el('span', { class: 'check__note' },
+          'They stay on the list and stay in the cloud. You can come back to them.'))));
+  }
+
+  body.push(el('label', { class: 'check' }, sample,
+    el('span', {},
+      'Read only the first 50 records of each file',
+      el('span', { class: 'check__note' },
+        'A quick way to check everything reads correctly before committing to a ' +
+        'long run.'))));
+
+  if (willDownload && plan.download.files.length) {
+    body.push(el('details', {},
+      el('summary', {},
+        plan.download.listed < plan.download.count
+          ? `The ${num(plan.download.listed)} largest of ${num(plan.download.count)} files to download`
+          : `The ${plural(plan.download.count, 'file')} to download`),
+      el('pre', { class: 'raw' },
+        plan.download.files
+          .map((f) => `${bytes(f.size_bytes).padStart(10)}  ${f.path}`)
+          .join('\n')),
+    ));
+  }
+
+  body.push(el('p', { class: 'muted mb-0' }, plan.scan.note));
+
+  const dialog = modal({
+    title: 'Read everything Outlook left on this computer?',
+    body: el('div', { class: 'stack' }, ...body),
+    actions: [
+      confirm,
+      el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() },
+        'Not now'),
+    ],
+  });
+
+  confirm.onclick = async () => {
+    dialog.close();
+    try {
+      await api.readAll({
+        skip_download: skipCloud.checked,
+        sample: sample.checked ? 50 : 0,
+      });
+    } catch (err) {
+      if (err.status === 409) {
+        const busy = modal({
+          title: 'Something is already running',
+          body: el('p', {},
+            'Recall does one of these at a time. You can watch it below, or stop ' +
+            'it first and start again.'),
+          actions: [
+            el('button', {
+              class: 'btn btn--primary', type: 'button',
+              onclick: () => { busy.close(); pollJob(); },
+            }, 'Show me'),
+          ],
+        });
+        return;
+      }
+      errorDialog(err);
+      return;
+    }
+    renderControls();
+    pollJob();
+  };
+
+  syncConfirm();
 }
 
 // --- the drive chooser ----------------------------------------------------
@@ -421,7 +654,7 @@ async function openReadDialog(ids) {
             errorDialog(err);
           }
         },
-      }, sample.checked ? 'Read a sample' : 'Start reading'),
+      }, 'Start reading'),
       el('button', { class: 'btn', type: 'button', onclick: () => dialog.close() },
         'Not now'),
     ],
@@ -443,21 +676,41 @@ async function pollJob() {
 
   clear(host);
 
+  // Re-draw the controls only when a job starts or stops. Doing it every tick
+  // would rebuild the filter box under the user's cursor once a second.
+  if (jobRunning !== (job.state === 'running')) {
+    jobRunning = job.state === 'running';
+    renderControls();
+  }
+
   if (job.state === 'running') {
+    const stop = el('button', {
+      class: 'btn btn--danger', type: 'button',
+      onclick: async (e) => {
+        // Without this the button stays live and unchanged, and a user who
+        // sees nothing happen presses it four more times.
+        e.target.disabled = true;
+        e.target.textContent = 'Stopping…';
+        try { await api.cancelJob(); } catch (err) { errorDialog(err); }
+      },
+    }, stopLabel(job.phase));
+
     host.append(el('div', { class: 'card' },
       el('h2', { class: 'card__title mt-0' }, jobTitle(job.kind)),
+      job.phase_count ? phaseStrip(job) : null,
       el('p', {}, job.message),
       progressBar(job),
-      el('div', { class: 'btn-row' },
-        el('button', {
-          class: 'btn btn--danger', type: 'button',
-          onclick: async () => {
-            try { await api.cancelJob(); } catch (err) { errorDialog(err); }
-          },
-        }, 'Stop, and keep what has been done so far'),
-      ),
+      el('div', { class: 'btn-row' }, stop),
+      el('p', { class: 'muted small mb-0' }, stopNote(job.phase)),
     ));
     pollTimer = setTimeout(pollJob, 1000);
+    return;
+  }
+
+  if ((job.state === 'done' || job.state === 'canceled') && job.kind === 'read_all') {
+    host.append(passResult(job));
+    await refreshSummary();
+    await reload();
     return;
   }
 
@@ -538,7 +791,168 @@ function jobTitle(kind) {
     extract: 'Reading your Outlook files',
     hydrate: 'Downloading from OneDrive',
     index: 'Building the search index',
+    read_all: 'Finding, downloading and reading everything',
   })[kind] || 'Work';
+}
+
+/** What the whole pass did, once it has stopped for any reason.
+ *
+ * A table rather than a run of paragraphs, because there are seven numbers and
+ * seven sentences is a wall. Rows worth nothing are left out entirely - a
+ * printed zero invites the question "why is it zero".
+ */
+function passResult(job) {
+  const d = job.detail || {};
+  const stopped = d.stopped_for;
+  const canceled = job.state === 'canceled';
+
+  const rows = [
+    ['Files found by the search', num(d.files_found)],
+    d.files_copied
+      ? ['Files downloaded and kept here',
+         `${num(d.files_copied)} — ${bytes(d.bytes_copied)}`]
+      : null,
+    ['Files read', num(d.files_read)],
+    ['Records saved', num(d.items_written)],
+    d.duplicates_collapsed
+      ? ['Records already in the archive, not added again',
+         num(d.duplicates_collapsed)]
+      : null,
+    d.attachments_written
+      ? ['Attachments saved', num(d.attachments_written)] : null,
+  ].filter(Boolean);
+
+  const kind = stopped === 'disk' || stopped === 'workdir' ? 'error'
+    : (canceled ? 'warning' : 'good');
+  const title = stopped === 'disk' ? 'Stopped: this drive filled up'
+    : stopped === 'workdir' ? 'Stopped: the working folder is inside OneDrive'
+    : canceled ? 'Stopped' : 'Finished';
+
+  const body = [
+    el('p', {}, job.message),
+    el('div', { class: 'table-wrap' },
+      el('table', { class: 'table--keyvalue' },
+        el('tbody', {}, ...rows.map(([label, value]) => el('tr', {},
+          el('th', {}, label),
+          el('td', { class: 'num' }, value),
+        ))))),
+  ];
+
+  if (canceled || stopped) {
+    body.push(el('p', {},
+      'Nothing is lost. Running it again carries on from here — files already ' +
+      'downloaded are not downloaded twice, and records already saved are not ' +
+      'saved twice.'));
+  }
+  if (d.skipped_download) {
+    body.push(el('p', { class: 'qualified-note' },
+      'The cloud-only files were left where they are, because you asked for ' +
+      'that. They are still on the list.'));
+  }
+  if (d.downloads_failed) {
+    body.push(el('p', { class: 'qualified-note' },
+      `${plural(d.downloads_failed, 'file')} could not be downloaded. They are ` +
+      'listed below, and they stay on the list to try again.'));
+  }
+  if (d.locked_attempted) {
+    body.push(el('p', {},
+      `${plural(d.locked_attempted, 'file')} were being held open by Outlook, ` +
+      'so Outlook was asked to read them. Those cannot be compared against ' +
+      'other files for duplicates, because comparing needs the same lock.'));
+  }
+  if (d.failures && d.failures.length) {
+    body.push(el('details', {},
+      el('summary', {}, `${plural(d.failures.length, 'file')} did not work out`),
+      el('pre', { class: 'raw' },
+        d.failures.map(([path, reason]) => `${path}\n    ${reason}`).join('\n\n'))));
+  }
+
+  // Always, not only when something went wrong. A total is only honest if the
+  // thing that qualifies it is as easy to find as the number itself.
+  body.push(
+    el('p', { class: 'qualified-note' },
+      'These count what Recall could read. Where a file was only partly ' +
+      'readable, the Problems screen says how much is thought to be missing — ' +
+      'those numbers are never folded into the totals above.'),
+    el('div', { class: 'btn-row' },
+      d.items_written
+        ? el('a', { class: 'btn btn--primary', href: '#/search' }, 'Search the archive')
+        : null,
+      el('a', { class: 'btn', href: '#/problems' }, 'See what could not be read'),
+      stopped === 'disk'
+        ? el('button', { class: 'btn', type: 'button', onclick: openFullPass },
+            'Try again from here')
+        : null,
+    ),
+  );
+
+  return notice(kind, title, ...body);
+}
+
+const PHASE_NAMES = {
+  scanning: 'Searching your drives',
+  downloading: 'Downloading from the cloud',
+  comparing: 'Looking for identical copies',
+  reading: 'Reading into the archive',
+};
+const PHASE_ORDER = ['scanning', 'downloading', 'comparing', 'reading'];
+
+/** All four steps, always listed.
+ *
+ * A bare "Step 2 of 4" tells you where you are but not what is still coming,
+ * and on a pass that runs for hours the next thing that will happen is the
+ * question people actually have. State is a word as well as a shape, so it
+ * does not depend on noticing a colour.
+ */
+function phaseStrip(job) {
+  const at = PHASE_ORDER.indexOf(job.phase);
+  // A step that was not needed - nothing to download, nothing new to compare -
+  // must not read as "finished". Position alone cannot tell the two apart, so
+  // the job says which steps it actually entered.
+  const ran = new Set((job.detail && job.detail.phases_entered) || PHASE_ORDER);
+
+  return el('ol', { class: 'steps', 'aria-live': 'polite' },
+    ...PHASE_ORDER.map((name, i) => {
+      const now = at === i;
+      const past = at > i;
+      const skipped = past && !ran.has(name);
+      const done = past && !skipped;
+      return el('li', {
+        class: 'steps__item'
+          + (now ? ' is-now' : '')
+          + (done ? ' is-done' : '')
+          + (skipped ? ' is-skipped' : ''),
+        'aria-current': now ? 'step' : null,
+      },
+        el('span', {}, PHASE_NAMES[name]),
+        el('span', { class: 'steps__note' },
+          now ? 'happening now'
+            : done ? 'finished'
+            : skipped ? 'nothing to do'
+            : 'not started yet'),
+      );
+    }),
+  );
+}
+
+function stopLabel(phase) {
+  return ({
+    scanning: 'Stop, and keep the files found so far',
+    downloading: 'Stop after this file, and keep what has come down',
+    comparing: 'Stop',
+    reading: 'Stop, and keep the records read so far',
+  })[phase] || 'Stop, and keep what has been done so far';
+}
+
+function stopNote(phase) {
+  return ({
+    scanning: 'The list keeps everything found up to now.',
+    downloading:
+      'The file coming down now is not kept — its half-copy is deleted, so ' +
+      'nothing broken is left behind. Every file already downloaded stays.',
+    reading:
+      'Starting again carries on from where it stopped. Nothing is read twice.',
+  })[phase] || 'Everything finished so far is kept.';
 }
 
 // --- the table ------------------------------------------------------------
@@ -680,12 +1094,18 @@ function rowView(r) {
   });
 
   const conditions = [];
-  if (r.is_placeholder) conditions.push(tag('Cloud only — not downloaded', 'info'));
-  if (!r.is_readable) conditions.push(tag('Locked — close Outlook', 'critical'));
+  // "Copy kept by Recall", not "Downloaded": the fact worth noticing is that a
+  // second copy now exists on this computer and will stay there. That is the
+  // only place the user meets it after the dialog has closed.
+  if (r.has_local_copy) conditions.push(tag('Copy kept by Recall', 'good'));
+  else if (r.is_placeholder) conditions.push(tag('Cloud only — not downloaded', 'info'));
+  // Telling someone to close Outlook is simply untrue once Outlook has read it.
+  if (r.read_by_outlook) conditions.push(tag('Outlook read this one', 'good'));
+  else if (!r.is_readable) conditions.push(tag('Locked — close Outlook', 'critical'));
   if (r.duplicate_of) conditions.push(tag('Duplicate', 'medium'));
-  if (r.parse_state === 'done') conditions.push(tag('Read', 'good'));
+  if (r.parse_state === 'done' && !r.read_by_outlook) conditions.push(tag('Read', 'good'));
   if (r.parse_state === 'failed') conditions.push(tag('Could not be read', 'critical'));
-  if (r.parse_state === 'pending' && r.is_readable && !r.is_placeholder) {
+  if (r.parse_state === 'pending' && (r.has_local_copy || (r.is_readable && !r.is_placeholder))) {
     conditions.push(tag('Not read yet', 'plain'));
   }
   if (r.finding_count) conditions.push(severityTag(r.worst_severity));
@@ -696,6 +1116,9 @@ function rowView(r) {
     el('td', {},
       el('div', { class: 'cell-name' }, r.name),
       el('div', { class: 'cell-path' }, r.folder),
+      r.local_copy_path
+        ? el('div', { class: 'cell-path' }, `Recall's copy: ${r.local_copy_path}`)
+        : null,
       r.duplicate_of_path
         ? el('div', { class: 'cell-path' }, `Identical to: ${r.duplicate_of_path}`)
         : null,
@@ -724,7 +1147,8 @@ function renderSelectionActions() {
   const n = state.selected.size;
   if (!n) {
     host.append(el('p', { class: 'muted mb-0' },
-      'Tick files above to download cloud-only ones.'));
+      'Tick files above to work on just those. The button at the top does ' +
+      'everything in one go.'));
     return;
   }
 

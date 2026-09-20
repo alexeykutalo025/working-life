@@ -5,6 +5,7 @@
 | magic_mismatch         | extension and header signature disagree         |
 | partial_parse          | store claims N items, fewer than 95% came out   |
 | read_failure           | CRC or block read error mid-store               |
+| locked_but_read        | held open by Outlook, and Outlook read it for us |
 | needs_password         | encrypted or password-protected store           |
 | orphaned_ost           | .ost with no matching Outlook profile           |
 | zero_or_tiny           | zero-byte or implausibly small for its type     |
@@ -26,6 +27,7 @@ from pathlib import Path
 
 from ..logging_setup import get_logger
 from ..models import Severity
+from ..parsers.pst_backend import looks_locked_by_outlook
 from .engine import Finding, record_finding, resolve_absent_findings
 
 log = get_logger("integrity.sources")
@@ -264,13 +266,42 @@ def _check_unreadable(conn) -> int:
     """Files the scanner could not open - usually Outlook is holding them."""
     n = 0
     present: list[tuple] = []
+    read_anyway: list[tuple] = []
     for row in conn.execute(
-        "SELECT id, path, lock_error, ext FROM source_files "
-        "WHERE is_readable = 0 AND is_placeholder = 0"
+        "SELECT id, path, lock_error, ext, parse_state, item_count "
+        "FROM source_files WHERE is_readable = 0 AND is_placeholder = 0"
     ):
         name = Path(row["path"]).name
         err = row["lock_error"] or "the reason was not recorded"
-        locked_by_outlook = "PermissionError" in err or "being used by another" in err
+        locked_by_outlook = looks_locked_by_outlook(row["ext"], err)
+
+        # Windows would not open it, but Outlook did, and the records are in
+        # the archive. Reporting that as "could not be read at all" would
+        # subtract this file's contents from every total on every screen.
+        # Overstating what is missing is no more honest than hiding it.
+        if row["parse_state"] == "done" and (row["item_count"] or 0) > 0:
+            read_anyway.append(("locked_but_read", int(row["id"]), -1, -1, ""))
+            record_finding(
+                conn,
+                Finding(
+                    code="locked_but_read",
+                    severity=Severity.INFO,
+                    title=f"{name} is open in Outlook, and Outlook read it for us",
+                    detail=(
+                        "Windows would not let Recall open this file directly, "
+                        "because Outlook is using it. Recall asked Outlook to "
+                        "read it instead, and it worked - everything in it is "
+                        "in the archive.\n\n"
+                        "Nothing needs doing. It is listed here only so the "
+                        "file's condition on the Files screen makes sense.\n\n"
+                        f"Exact message from Windows: {err}"
+                    ),
+                    source_file_id=int(row["id"]),
+                    evidence={"path": row["path"], "error": err},
+                ),
+            )
+            n += 1
+            continue
 
         if locked_by_outlook:
             detail = (
@@ -303,6 +334,7 @@ def _check_unreadable(conn) -> int:
         n += 1
 
     resolve_absent_findings(conn, "read_failure", present)
+    resolve_absent_findings(conn, "locked_but_read", read_anyway)
     return n
 
 

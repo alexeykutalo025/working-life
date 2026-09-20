@@ -602,3 +602,87 @@ def test_the_audit_reports_a_check_family_that_could_not_run(settings, conn, mon
 def test_an_unknown_check_name_is_refused(settings, conn):
     with pytest.raises(ValueError, match="Unknown check"):
         run_audit(conn, settings, checks={"nonsense"})
+
+
+# --- files Outlook was holding open, that Outlook then read ----------------
+
+
+def _locked_row(conn, *, parse_state: str, item_count: int) -> int:
+    from recall.db import transaction
+
+    with transaction(conn):
+        cur = conn.execute(
+            "INSERT INTO source_files(path, ext, size_bytes, is_placeholder, "
+            "is_readable, lock_error, parse_state, item_count) "
+            "VALUES ('C:/Users/tim/busy.pst', '.pst', 500000, 0, 0, ?, ?, ?)",
+            (
+                "PermissionError: [Errno 13] Permission denied",
+                parse_state,
+                item_count,
+            ),
+        )
+        return int(cur.lastrowid)
+
+
+def test_a_locked_file_that_outlook_read_is_not_reported_as_unread(conn, settings):
+    """Overstating what is missing is no more honest than hiding it.
+
+    Windows would not open this file, so is_readable stays 0 for ever. But
+    Outlook read it and the records are in the archive. Left alone, the
+    unreadable check would raise "could not be read at all" - a count-affecting
+    finding - and subtract this mailbox's contents from every total on every
+    screen.
+    """
+    from recall.integrity.sources import source_checks
+
+    source_id = _locked_row(conn, parse_state="done", item_count=40000)
+    source_checks(conn, settings)
+
+    codes = {
+        r["code"]
+        for r in conn.execute(
+            "SELECT code FROM findings WHERE source_file_id = ?", (source_id,)
+        )
+    }
+    assert "read_failure" not in codes
+    assert "locked_but_read" in codes
+
+
+def test_locked_but_read_does_not_qualify_a_count(conn, settings):
+    """Nothing is missing, so no total needs a caveat."""
+    from recall.integrity.honest import _COUNT_AFFECTING
+
+    assert "locked_but_read" not in _COUNT_AFFECTING
+
+
+def test_a_locked_file_that_was_not_read_still_reports_a_failure(conn, settings):
+    """The correction must not go too far the other way."""
+    from recall.integrity.sources import source_checks
+
+    source_id = _locked_row(conn, parse_state="pending", item_count=0)
+    source_checks(conn, settings)
+
+    codes = {
+        r["code"]
+        for r in conn.execute(
+            "SELECT code FROM findings WHERE source_file_id = ?", (source_id,)
+        )
+    }
+    assert "read_failure" in codes
+    assert "locked_but_read" not in codes
+
+
+def test_a_locked_file_read_with_no_records_still_reports_a_failure(conn, settings):
+    """'done' with nothing in it is not evidence that Outlook read anything."""
+    from recall.integrity.sources import source_checks
+
+    source_id = _locked_row(conn, parse_state="done", item_count=0)
+    source_checks(conn, settings)
+
+    codes = {
+        r["code"]
+        for r in conn.execute(
+            "SELECT code FROM findings WHERE source_file_id = ?", (source_id,)
+        )
+    }
+    assert "read_failure" in codes

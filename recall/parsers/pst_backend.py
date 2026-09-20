@@ -57,6 +57,42 @@ _SKIP_FOLDERS = {
 }
 
 
+#: Outlook data files, the only kind Outlook itself can be asked to read.
+OUTLOOK_STORE_EXTENSIONS = frozenset({".pst", ".ost"})
+
+#: What Windows says when another program is holding a file open.
+_LOCK_MARKERS = ("PermissionError", "being used by another")
+
+
+def looks_locked_by_outlook(ext: str | None, lock_error: str | None) -> bool:
+    """Is this a file Outlook is probably holding open, that Outlook could read?
+
+    Deliberately narrow. A locked .mbox is still locked - nothing here can help
+    it. A .pst that failed with a disk error is broken, not busy, and sending it
+    to Outlook only spends two minutes finding that out again. Only a sharing
+    error on an Outlook data file qualifies, because only then is there a real
+    chance that the program holding it open is also the program that can read
+    it out.
+
+    The SQL form below has to agree with this exactly; there is a test that
+    runs the same cases through both.
+    """
+    if (ext or "").lower() not in OUTLOOK_STORE_EXTENSIONS:
+        return False
+    err = lock_error or ""
+    return any(marker in err for marker in _LOCK_MARKERS)
+
+
+#: :func:`looks_locked_by_outlook` as a WHERE clause, for picking these rows out
+#: of the database without loading all of them first.
+LOCKED_BY_OUTLOOK_SQL = (
+    "(is_readable = 0 AND is_placeholder = 0 "
+    "AND LOWER(ext) IN ('.pst', '.ost') "
+    "AND (lock_error LIKE '%PermissionError%' "
+    "     OR lock_error LIKE '%being used by another%'))"
+)
+
+
 class PstBackend(abc.ABC):
     """One way of reading a PST or OST."""
 

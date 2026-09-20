@@ -85,7 +85,10 @@ def home(request: Request) -> dict[str, Any]:
                SUM(CASE WHEN parse_state = 'done' THEN 1 ELSE 0 END) AS read_ok,
                SUM(CASE WHEN parse_state = 'pending' THEN 1 ELSE 0 END) AS pending,
                SUM(CASE WHEN parse_state = 'failed' THEN 1 ELSE 0 END) AS failed,
-               SUM(CASE WHEN is_placeholder = 1 THEN 1 ELSE 0 END) AS cloud_only,
+               SUM(CASE WHEN is_placeholder = 1 AND local_copy_path IS NULL
+                        THEN 1 ELSE 0 END) AS cloud_only,
+               SUM(CASE WHEN local_copy_path IS NOT NULL THEN 1 ELSE 0 END)
+                   AS cloud_copied,
                SUM(CASE WHEN duplicate_of IS NOT NULL THEN 1 ELSE 0 END) AS duplicates,
                COALESCE(SUM(size_bytes), 0) AS total_bytes
         FROM source_files
@@ -159,11 +162,17 @@ def _next_steps(conn, sources, item_count: int) -> list[dict[str, str]]:
         })
         return steps
 
-    if pending:
+    if pending or cloud:
+        why = "Nothing in them is in the archive until they are read."
+        if cloud:
+            why += (
+                f" {cloud:,} of them are in OneDrive and will be downloaded "
+                "first - you will be shown the size before anything starts."
+            )
         steps.append({
-            "label": f"Read the {pending:,} file(s) not read yet",
-            "href": "#/sources",
-            "why": "Nothing in them is in the archive until they are read.",
+            "label": "Find every Outlook file and read it into the archive",
+            "href": "#/sources?start=1",
+            "why": why,
             "primary": "yes",
         })
 
@@ -184,14 +193,6 @@ def _next_steps(conn, sources, item_count: int) -> list[dict[str, str]]:
             "label": f"Look at {critical:,} serious problem(s)",
             "href": "#/problems",
             "why": "Records are missing or wrong, and Recall can say which.",
-            "primary": "",
-        })
-
-    if cloud:
-        steps.append({
-            "label": f"Deal with {cloud:,} cloud-only file(s)",
-            "href": "#/sources",
-            "why": "These are in OneDrive and have not been downloaded.",
             "primary": "",
         })
 

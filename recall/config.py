@@ -80,6 +80,10 @@ class ScanSettings(_Section):
 
 
 class OneDriveSettings(_Section):
+    #: No longer read by anything: the one-pass dialog shows the download
+    #: size and takes the decision there. Kept because config.py forbids
+    #: unknown keys, so removing it would stop existing config files
+    #: loading at all.
     auto_hydrate: bool = False
     max_hydrate_batch_gb: float = 5.0
 
@@ -238,6 +242,11 @@ class Settings(BaseModel):
         return self.workdir_path / "blobs"
 
     @property
+    def cloud_path(self) -> Path:
+        """Recall's own copies of files that live in the cloud only."""
+        return self.workdir_path / "cloud"
+
+    @property
     def logs_path(self) -> Path:
         return self.workdir_path / "logs"
 
@@ -250,6 +259,7 @@ class Settings(BaseModel):
         for p in (
             self.workdir_path,
             self.blobs_path,
+            self.cloud_path,
             self.logs_path,
             self.exports_path,
         ):

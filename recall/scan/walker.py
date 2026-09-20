@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Callable, Iterator
 
 from ..config import Settings
-from ..db import log_error, transaction
+from ..db import REACHABLE_SQL, log_error, transaction
 from ..logging_setup import get_logger
 from ..models import Container
 from .fingerprint import file_times, find_duplicate_groups, hash_file, mark_duplicates
@@ -539,7 +539,7 @@ class Scanner:
                 self.progress.message = "Fingerprinting files..."
                 self._hash_pending(size_cap)
                 self.progress.message = "Looking for identical copies..."
-                self._mark_duplicates()
+                self.mark_duplicates()
                 self.progress.state = "done"
                 self.progress.message = self.summary_line()
 
@@ -629,20 +629,24 @@ class Scanner:
     def _hash_pending(self, size_cap: int) -> None:
         """Hash every real local file we have not hashed yet."""
         rows = self.conn.execute(
-            "SELECT id, path, size_bytes, is_placeholder, is_readable "
-            "FROM source_files "
-            "WHERE content_hash IS NULL AND is_placeholder = 0 AND is_readable = 1"
+            "SELECT id, path, size_bytes, is_placeholder, is_readable, "
+            "       local_copy_path "
+            f"FROM source_files WHERE content_hash IS NULL AND {REACHABLE_SQL}"
         ).fetchall()
 
         for row in rows:
             if self.cancel.is_set():
                 return
             self.progress.current_path = row["path"]
+            # A file Recall has copied is hashed from the copy, and the
+            # placeholder guard does not apply to it: the bytes are already
+            # here, so reading them downloads nothing.
+            copy = row["local_copy_path"]
             result = hash_file(
-                row["path"],
+                copy or row["path"],
                 size_cap_bytes=size_cap,
                 size_bytes=row["size_bytes"],
-                is_placeholder=bool(row["is_placeholder"]),
+                is_placeholder=bool(row["is_placeholder"]) and not copy,
                 cancel=self.cancel.is_set,
             )
             self.progress.bytes_hashed += result.bytes_read
@@ -664,24 +668,37 @@ class Scanner:
                     source_file_id=row["id"],
                 )
 
-    def _mark_duplicates(self) -> None:
-        rows = [
-            dict(r)
-            for r in self.conn.execute(
-                "SELECT id, path, content_hash, size_bytes FROM source_files "
-                "WHERE content_hash IS NOT NULL"
-            )
-        ]
-        groups = find_duplicate_groups(rows)
-        with transaction(self.conn):
-            mark_duplicates(self.conn, groups)
-        log.info("Found %d groups of identical files", len(groups))
+    def mark_duplicates(self) -> None:
+        mark_duplicates_from_db(self.conn)
 
     # -- reporting --------------------------------------------------------
 
     def summary_line(self) -> str:
         """The one-page summary from spec section 5, stated honestly."""
         return summarize(self.conn)
+
+
+def mark_duplicates_from_db(conn) -> int:
+    """Re-group every hashed file and write ``duplicate_of``. Returns groups.
+
+    A free function because it has to run twice in a single "read everything"
+    pass: once at the end of the scan, and again after cloud-only files have
+    been downloaded and hashed. Without that second run those files carry a
+    hash nothing has compared, and two byte-identical mailboxes are reported as
+    two different mailboxes.
+    """
+    rows = [
+        dict(r)
+        for r in conn.execute(
+            "SELECT id, path, content_hash, size_bytes FROM source_files "
+            "WHERE content_hash IS NOT NULL"
+        )
+    ]
+    groups = find_duplicate_groups(rows)
+    with transaction(conn):
+        mark_duplicates(conn, groups)
+    log.info("Found %d groups of identical files", len(groups))
+    return len(groups)
 
 
 def human_bytes(n: int) -> str:
@@ -710,10 +727,14 @@ def summarize(conn) -> str:
         SELECT COUNT(*) AS n,
                COALESCE(SUM(size_bytes), 0) AS total,
                SUM(CASE WHEN duplicate_of IS NOT NULL THEN 1 ELSE 0 END) AS dupes,
-               SUM(CASE WHEN is_placeholder = 1 THEN 1 ELSE 0 END) AS cloud,
+               SUM(CASE WHEN is_placeholder = 1 AND local_copy_path IS NULL
+                        THEN 1 ELSE 0 END) AS cloud,
+               SUM(CASE WHEN local_copy_path IS NOT NULL THEN 1 ELSE 0 END) AS copied,
                SUM(CASE WHEN is_readable = 0 THEN 1 ELSE 0 END) AS locked,
-               SUM(CASE WHEN content_hash IS NULL AND is_placeholder = 0
-                        AND is_readable = 1 THEN 1 ELSE 0 END) AS uncompared
+               SUM(CASE WHEN content_hash IS NULL
+                        AND (local_copy_path IS NOT NULL
+                             OR (is_placeholder = 0 AND is_readable = 1))
+                        THEN 1 ELSE 0 END) AS uncompared
         FROM source_files
         """
     ).fetchone()
@@ -742,6 +763,14 @@ def summarize(conn) -> str:
             many(row["cloud"], "is stored in the cloud only", "are stored in the cloud only")
             + " and " + ("has" if row["cloud"] == 1 else "have")
             + " not been downloaded."
+        )
+    if row["copied"]:
+        parts.append(
+            many(row["copied"],
+                 "was stored in the cloud only and has been copied here",
+                 "were stored in the cloud only and have been copied here")
+            + " so " + ("it" if row["copied"] == 1 else "they")
+            + " could be read."
         )
     if row["locked"]:
         parts.append(

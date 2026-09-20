@@ -10,7 +10,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from ..config import Settings, fixed_drives, onedrive_roots
+from ..db import IN_IDS, REACHABLE_SQL, ids_param
 from ..logging_setup import get_logger
+from ..parsers.pst_backend import looks_locked_by_outlook
 from .jobs import JOBS, JobBusy
 
 log = get_logger("api.sources")
@@ -57,6 +59,9 @@ class SourceRow(BaseModel):
     mtime_utc: str | None
     content_hash: str | None
     is_placeholder: bool
+    local_copy_path: str | None
+    has_local_copy: bool
+    read_by_outlook: bool
     is_readable: bool
     lock_error: str | None
     duplicate_of: int | None
@@ -322,6 +327,7 @@ def list_sources(
     state: str | None = None,
     only_duplicates: bool = False,
     only_placeholders: bool = False,
+    only_copied: bool = False,
     only_problems: bool = False,
     search: str | None = None,
     limit: int = 500,
@@ -360,7 +366,12 @@ def list_sources(
     if only_duplicates:
         where.append("sf.duplicate_of IS NOT NULL")
     if only_placeholders:
-        where.append("sf.is_placeholder = 1")
+        # "Cloud-only" means still in the cloud. A file Recall has downloaded
+        # and kept is not one of these any more, whatever OneDrive has since
+        # done with the original.
+        where.append("sf.is_placeholder = 1 AND sf.local_copy_path IS NULL")
+    if only_copied:
+        where.append("sf.local_copy_path IS NOT NULL")
     if only_problems:
         where.append(
             "EXISTS (SELECT 1 FROM findings f WHERE f.source_file_id = sf.id "
@@ -410,8 +421,20 @@ def list_sources(
 
 def _row_to_source(r) -> dict[str, Any]:
     path = Path(r["path"])
-    if r["is_placeholder"]:
+    copy = r["local_copy_path"]
+    read_by_outlook = (
+        not r["is_readable"]
+        and r["parse_state"] == "done"
+        and (r["item_count"] or 0) > 0
+    )
+    if copy and r["content_hash"]:
+        comparison = "a copy is kept in Recall's folder, and compared"
+    elif copy:
+        comparison = "a copy is kept in Recall's folder"
+    elif r["is_placeholder"]:
         comparison = "not downloaded, so not compared"
+    elif read_by_outlook:
+        comparison = "read through Outlook, so not compared"
     elif not r["is_readable"]:
         comparison = "could not be opened, so not compared"
     elif r["content_hash"]:
@@ -430,6 +453,9 @@ def _row_to_source(r) -> dict[str, Any]:
         "mtime_utc": r["mtime_utc"],
         "content_hash": r["content_hash"],
         "is_placeholder": bool(r["is_placeholder"]),
+        "local_copy_path": copy,
+        "has_local_copy": bool(copy),
+        "read_by_outlook": read_by_outlook,
         "is_readable": bool(r["is_readable"]) if r["is_readable"] is not None else True,
         "lock_error": r["lock_error"],
         "duplicate_of": r["duplicate_of"],
@@ -459,14 +485,20 @@ def sources_summary(request: Request) -> dict[str, Any]:
         SELECT COUNT(*) AS n,
                COALESCE(SUM(size_bytes), 0) AS total_bytes,
                SUM(CASE WHEN duplicate_of IS NOT NULL THEN 1 ELSE 0 END) AS duplicates,
-               SUM(CASE WHEN is_placeholder = 1 THEN 1 ELSE 0 END) AS placeholders,
+               SUM(CASE WHEN is_placeholder = 1 AND local_copy_path IS NULL
+                        THEN 1 ELSE 0 END) AS placeholders,
+               SUM(CASE WHEN local_copy_path IS NOT NULL THEN 1 ELSE 0 END)
+                   AS cloud_copied,
                SUM(CASE WHEN is_readable = 0 THEN 1 ELSE 0 END) AS unreadable,
                SUM(CASE WHEN parse_state = 'done' THEN 1 ELSE 0 END) AS parsed,
                SUM(CASE WHEN parse_state = 'failed' THEN 1 ELSE 0 END) AS failed,
                SUM(CASE WHEN parse_state = 'pending' THEN 1 ELSE 0 END) AS pending,
-               SUM(CASE WHEN content_hash IS NULL AND is_placeholder = 0
-                        AND is_readable = 1 THEN 1 ELSE 0 END) AS uncompared,
-               COALESCE(SUM(CASE WHEN is_placeholder = 1 THEN size_bytes ELSE 0 END), 0)
+               SUM(CASE WHEN content_hash IS NULL AND 
+                        (local_copy_path IS NOT NULL
+                         OR (is_placeholder = 0 AND is_readable = 1))
+                        THEN 1 ELSE 0 END) AS uncompared,
+               COALESCE(SUM(CASE WHEN is_placeholder = 1 AND local_copy_path IS NULL
+                                 THEN size_bytes ELSE 0 END), 0)
                    AS placeholder_bytes
         FROM source_files
         """
@@ -625,61 +657,89 @@ def hydrate_start(request: Request, body: HydrateRequest) -> dict[str, Any]:
     targets = [(int(r["id"]), r["path"], r["size_bytes"] or 0) for r in rows]
 
     def work(job) -> None:
+        # One download path for the whole program: the file is copied into
+        # Recall's own folder and kept, rather than hydrated where it lies and
+        # left for OneDrive to evict again next week.
         from ..db import connect, log_error
-        from ..scan.fingerprint import hash_file
-        from ..scan.onedrive import hydrate, still_placeholder
+        from ..scan.onedrive import (
+            copy_destination,
+            copy_utc_now,
+            hydrate_to,
+        )
 
         own = connect(settings.db_path)
+        copied = 0
         try:
-            job.progress(done=0, total=len(targets))
-            for i, (sid, path, size) in enumerate(targets, start=1):
+            settings.ensure_workdir()
+            total = sum(size for _, _, size in targets)
+            job.progress(done=0, total=total)
+            moved = 0
+            for sid, path, size in targets:
                 if job.cancel_event.is_set():
                     return
+                dest = copy_destination(settings.cloud_path, sid, Path(path))
                 job.progress(
-                    done=i - 1,
+                    done=moved,
                     current=path,
                     message=f"Downloading {Path(path).name} ({size / (1024**2):,.0f} MB)...",
                 )
-                try:
-                    hydrate(Path(path))
-                except OSError as exc:
+
+                def tick(done: int, _base=moved) -> None:
+                    job.progress(done=_base + done)
+
+                result = hydrate_to(
+                    Path(path),
+                    dest,
+                    expected_size=size,
+                    progress=tick,
+                    cancel=job.cancel_event.is_set,
+                )
+                if result.canceled:
+                    return
+                moved += size
+
+                if result.error:
                     log_error(
                         own,
                         "hydrate",
-                        f"Could not download {path}: {exc}",
-                        detail=repr(exc),
+                        f"Could not download {path}.",
+                        detail=result.error,
                         source_file_id=sid,
                     )
                     own.execute(
                         "UPDATE source_files SET lock_error = ? WHERE id = ?",
-                        (f"Download failed: {exc}", sid),
+                        (result.error, sid),
                     )
                     continue
 
-                if still_placeholder(Path(path)):
-                    own.execute(
-                        "UPDATE source_files SET lock_error = ? WHERE id = ?",
-                        (
-                            "The download finished but Windows still reports this "
-                            "file as cloud-only.",
-                            sid,
-                        ),
-                    )
-                    continue
-
-                result = hash_file(path, size_cap_bytes=0, size_bytes=size)
+                copied += 1
                 own.execute(
-                    "UPDATE source_files SET is_placeholder = 0, content_hash = ?, "
+                    "UPDATE source_files SET local_copy_path = ?, "
+                    "local_copy_bytes = ?, local_copy_utc = ?, "
+                    "content_hash = COALESCE(?, content_hash), "
                     "lock_error = NULL WHERE id = ?",
-                    (result.content_hash, sid),
+                    (
+                        str(dest),
+                        result.bytes_copied or size,
+                        copy_utc_now(),
+                        result.content_hash,
+                        sid,
+                    ),
                 )
-            job.progress(done=len(targets))
-            job.finish(f"Downloaded {len(targets)} file(s) from OneDrive.")
+            job.progress(done=total)
+            job.finish(
+                f"Downloaded {copied} file(s) from OneDrive and kept a copy of "
+                "each in Recall's own folder.",
+                files_copied=copied,
+            )
         finally:
             own.close()
 
     try:
-        status = JOBS.start("hydrate", work, message="Downloading from OneDrive...")
+        status = JOBS.start(
+            "hydrate", work, message="Downloading from OneDrive..."
+        )
+        JOBS.status.unit = "bytes"
     except JobBusy as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"started": True, "job": status.as_dict()}
@@ -704,14 +764,23 @@ def start_extract(request: Request, body: ExtractRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if body.ids:
-        placeholders = ",".join("?" * len(body.ids))
         rows = conn.execute(
-            f"SELECT id, path, is_placeholder, is_readable, parse_state "
-            f"FROM source_files WHERE id IN ({placeholders})",
-            body.ids,
+            "SELECT id, path, ext, is_placeholder, is_readable, lock_error, "
+            f"       local_copy_path, parse_state FROM source_files WHERE id {IN_IDS}",
+            (ids_param(body.ids),),
         ).fetchall()
 
-        blocked = [r for r in rows if r["is_placeholder"] or not r["is_readable"]]
+        def readable_now(r) -> bool:
+            if r["local_copy_path"]:
+                return True
+            if r["is_placeholder"]:
+                return False
+            if r["is_readable"]:
+                return True
+            # Outlook is holding it open, and Outlook can be asked to read it.
+            return looks_locked_by_outlook(r["ext"], r["lock_error"])
+
+        blocked = [r for r in rows if not readable_now(r)]
         if blocked and len(blocked) == len(rows):
             raise HTTPException(
                 status_code=400,
@@ -727,9 +796,7 @@ def start_extract(request: Request, body: ExtractRequest) -> dict[str, Any]:
                     )
                 ),
             )
-        source_ids = [
-            int(r["id"]) for r in rows if not r["is_placeholder"] and r["is_readable"]
-        ]
+        source_ids = [int(r["id"]) for r in rows if readable_now(r)]
         skipped = len(blocked)
     else:
         source_ids = None
@@ -802,7 +869,7 @@ def extract_plan(request: Request, ids: str = "") -> dict[str, Any]:
     """What reading would involve, before starting it."""
     conn = _conn(request)
 
-    where = "WHERE is_placeholder = 0 AND is_readable = 1"
+    where = f"WHERE {REACHABLE_SQL}"
     params: list[Any] = []
     if ids:
         try:

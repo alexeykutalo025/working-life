@@ -536,6 +536,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .tag--high::before     { content: "\25B2"; }  /* filled triangle */
 .tag--medium::before   { content: "\25CF"; }  /* filled circle */
 .tag--info::before     { content: "\25CB"; }  /* hollow circle */
+.tag--good::before     { content: "\2713"; }  /* tick */
+.tag--plain::before    { content: "\00B7"; }  /* middle dot */
 
 /* ==========================================================================
    Forms
@@ -615,6 +617,26 @@ input[type="checkbox"], input[type="radio"] {
 .progress__current {
   font-family: var(--font-mono); font-size: var(--size-small);
   color: var(--text-muted); word-break: break-all;
+}
+
+/* One pass, four steps. All four are always listed, so what has not happened
+   yet is as visible as what is happening now. The state is a word in
+   .steps__note as well as a shape in ::before - never colour alone. Nothing
+   here animates, so the reduced-motion block has nothing to turn off. */
+.steps { list-style: none; margin: 0 0 var(--sp-4); padding: 0; }
+.steps__item {
+  display: flex; align-items: baseline; gap: var(--sp-3);
+  padding: var(--sp-2) 0;
+  color: var(--text-muted);
+}
+.steps__item::before { content: "\25CB"; flex: none; }          /* not yet */
+.steps__item.is-now { color: var(--text); font-weight: 650; }
+.steps__item.is-now::before  { content: "\25B6"; color: var(--accent); }
+.steps__item.is-done::before { content: "\2713"; color: var(--good); }
+.steps__item.is-skipped::before { content: "\2014"; }            /* nothing to do */
+.steps__note {
+  color: var(--text-muted); font-weight: 400; font-size: var(--size-small);
+  margin-left: auto;
 }
 
 /* ==========================================================================

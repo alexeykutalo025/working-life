@@ -317,10 +317,20 @@ export function progressBar(job) {
   const known = job.total !== null && job.total !== undefined && job.total > 0;
   const pct = known ? Math.min(100, Math.round((job.done / job.total) * 100)) : null;
 
+  // A download counts bytes, not files. Saying "0 of 1" for forty minutes
+  // while a 20 GB mailbox comes down looks exactly like a program that has
+  // hung, so the amount is what moves.
+  const inBytes = job.unit === 'bytes';
+  const amount = inBytes ? bytes : num;
+
   const parts = [];
-  if (known) parts.push(`${num(job.done)} of ${num(job.total)} (${pct}%)`);
-  else if (job.done) parts.push(`${num(job.done)} so far`);
-  if (job.rate_per_sec) parts.push(`${num(Math.round(job.rate_per_sec))} per second`);
+  if (known) parts.push(`${amount(job.done)} of ${amount(job.total)} (${pct}%)`);
+  else if (job.done) parts.push(`${amount(job.done)} so far`);
+  if (job.rate_per_sec) {
+    parts.push(inBytes
+      ? `${bytes(Math.round(job.rate_per_sec))} per second`
+      : `${num(Math.round(job.rate_per_sec))} per second`);
+  }
   if (job.elapsed_sec) parts.push(`${duration(job.elapsed_sec)} elapsed`);
   parts.push(
     job.remaining_sec !== null && job.remaining_sec !== undefined
