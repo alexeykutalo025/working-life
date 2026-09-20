@@ -20,6 +20,7 @@ additions that the spec's own requirements imply but its DDL does not express:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from contextlib import contextmanager
@@ -372,6 +373,29 @@ def transaction(conn: sqlite3.Connection) -> Iterator[sqlite3.Connection]:
         raise
     else:
         conn.execute("COMMIT")
+
+
+#: Match a column against a list of ids, as ``WHERE id {IN_IDS}``, with
+#: ``ids_param(ids)`` as the matching parameter.
+#:
+#: The obvious way to write that is ``id IN (?,?,?,...)`` with one parameter
+#: per id, and it works on a test archive of twenty records. SQLite takes at
+#: most SQLITE_LIMIT_VARIABLE_NUMBER host parameters in one statement - 32,766
+#: on a current build, 999 on an older one - so somewhere between a test
+#: archive and a real one it stops working. It stopped on the client's: a
+#: search matching 42,767 records answered "too many SQL variables" where the
+#: table should have been, and the download beside it would have done the same.
+#:
+#: json_each turns the whole list into one parameter, so there is no limit left
+#: to reach. It has been part of SQLite itself since 3.38 and needs nothing
+#: installed. Ids are integers out of this same database, so nothing user-typed
+#: goes anywhere near the statement.
+IN_IDS = "IN (SELECT value FROM json_each(?))"
+
+
+def ids_param(ids) -> str:
+    """The parameter that goes with :data:`IN_IDS`."""
+    return json.dumps([int(i) for i in ids])
 
 
 def get_setting(conn: sqlite3.Connection, key: str, default: str | None = None) -> str | None:

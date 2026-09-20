@@ -17,6 +17,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..db import IN_IDS, ids_param
 from ..logging_setup import get_logger
 from .base import ExportError, ExportSelection
 from .rows import (
@@ -93,11 +94,15 @@ def export_search(
             "Change the search or the filters and try again."
         )
 
+    # The whole list as one parameter rather than one per record. A real
+    # archive matches more records than SQLite will take parameters for, and
+    # this is the road the Download button takes. See recall.db.IN_IDS.
+    matched = ids_param(item_ids)
+
     kinds_present = [
         r["kind"]
         for r in conn.execute(
-            f"SELECT DISTINCT kind FROM items WHERE id IN ({_marks(item_ids)})",
-            item_ids,
+            f"SELECT DISTINCT kind FROM items WHERE id {IN_IDS}", (matched,)
         )
     ]
 
@@ -127,9 +132,8 @@ def export_search(
             # between the count on screen and the rows in the file, so it is
             # counted and named in the result.
             missed = conn.execute(
-                f"SELECT COUNT(*) AS n FROM items "
-                f"WHERE kind = ? AND id IN ({_marks(item_ids)})",
-                (item_kind, *item_ids),
+                f"SELECT COUNT(*) AS n FROM items WHERE kind = ? AND id {IN_IDS}",
+                (item_kind, matched),
             ).fetchone()["n"]
             log.warning("no export columns for kind %r; %d record(s) reported "
                         "rather than dropped", item_kind, missed)
@@ -140,8 +144,8 @@ def export_search(
         ids_of_kind = [
             int(r["id"])
             for r in conn.execute(
-                f"SELECT id FROM items WHERE kind = ? AND id IN ({_marks(item_ids)})",
-                (item_kind, *item_ids),
+                f"SELECT id FROM items WHERE kind = ? AND id {IN_IDS}",
+                (item_kind, matched),
             )
         ]
         if not ids_of_kind:
@@ -149,8 +153,8 @@ def export_search(
 
         rows: Iterator[dict] = row_fn(
             conn,
-            where=f"i.id IN ({_marks(ids_of_kind)})",
-            params=ids_of_kind,
+            where=f"i.id {IN_IDS}",
+            params=[ids_param(ids_of_kind)],
         )
 
         selection = ExportSelection(
@@ -225,8 +229,8 @@ def _combined_workbook(
         ids_of_kind = [
             int(r["id"])
             for r in conn.execute(
-                f"SELECT id FROM items WHERE kind = ? AND id IN ({_marks(item_ids)})",
-                (item_kind, *item_ids),
+                f"SELECT id FROM items WHERE kind = ? AND id {IN_IDS}",
+                (item_kind, ids_param(item_ids)),
             )
         ]
         if not ids_of_kind:
@@ -241,7 +245,7 @@ def _combined_workbook(
 
         row_fn, columns = spec
         rows = list(row_fn(
-            conn, where=f"i.id IN ({_marks(ids_of_kind)})", params=ids_of_kind
+            conn, where=f"i.id {IN_IDS}", params=[ids_param(ids_of_kind)]
         ))
         sections.append((KIND_SHEET_NAMES.get(item_kind, item_kind), columns, rows))
         all_ids.extend(int(r["id"]) for r in rows if r.get("id") is not None)
@@ -437,8 +441,8 @@ def copy_attachments_out(conn, settings, item_ids: list[int], target: Path) -> d
     rows = conn.execute(
         f"SELECT a.id, a.filename, a.content_hash, a.is_inline, i.subject, "
         f"i.occurred_utc FROM attachments a JOIN items i ON i.id = a.item_id "
-        f"WHERE a.item_id IN ({_marks(item_ids)}) AND a.content_hash IS NOT NULL",
-        item_ids,
+        f"WHERE a.item_id {IN_IDS} AND a.content_hash IS NOT NULL",
+        (ids_param(item_ids),),
     ).fetchall()
 
     copied = 0

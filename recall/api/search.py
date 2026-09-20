@@ -206,6 +206,7 @@ def search_table(
     Each kind has its own columns, because a calendar entry and a contact share
     almost none, so one kind is returned at a time.
     """
+    from ..db import IN_IDS, ids_param
     from ..export.selection import _ROWS_FOR_KIND, KIND_SHEET_NAMES, _matching_ids
     from ..integrity.honest import qualifiers_for
 
@@ -218,6 +219,11 @@ def search_table(
         folder_id=folder_id, tag=tag, has_attachments=has_attachments,
         undated=undated, date_from=date_from, date_to=date_to, limit=100_000,
     )
+    # The whole list as one parameter, not one parameter per record: a real
+    # archive matches more records than SQLite will take parameters for, and
+    # this one answered "too many SQL variables" instead of showing a table.
+    # See recall.db.IN_IDS.
+    matched = ids_param(item_ids)
 
     counts: dict[str, int] = {}
     if item_ids:
@@ -225,8 +231,8 @@ def search_table(
             r["kind"]: int(r["n"])
             for r in conn.execute(
                 f"SELECT kind, COUNT(*) AS n FROM items "
-                f"WHERE id IN ({_marks(item_ids)}) GROUP BY kind",
-                item_ids,
+                f"WHERE id {IN_IDS} GROUP BY kind",
+                (matched,),
             )
         }
 
@@ -252,12 +258,13 @@ def search_table(
         page_ids = [
             int(r["id"])
             for r in conn.execute(
-                f"SELECT id FROM items WHERE kind = ? AND id IN ({_marks(item_ids)}) "
+                f"SELECT id FROM items WHERE kind = ? AND id {IN_IDS} "
                 "ORDER BY occurred_utc IS NULL, occurred_utc, id LIMIT ? OFFSET ?",
-                (showing, *item_ids, limit, offset),
+                (showing, matched, limit, offset),
             )
         ]
         if page_ids:
+            # One page, so this list is small by construction.
             rows = list(row_fn(
                 conn, where=f"i.id IN ({_marks(page_ids)})", params=page_ids
             ))

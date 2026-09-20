@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable
 
+from ..db import IN_IDS, ids_param
 from ..logging_setup import get_logger
 
 log = get_logger("scan.fingerprint")
@@ -200,10 +201,13 @@ def mark_duplicates(conn, groups: list[DuplicateGroup]) -> int:
     # A keeper is never a duplicate of anything.
     keeper_ids = [g.keeper_id for g in groups]
     if keeper_ids:
-        placeholders = ",".join("?" * len(keeper_ids))
+        # One parameter for the whole list. A machine with decades of saved
+        # .msg files can have more duplicate groups than SQLite will take
+        # parameters for, and a scan that reached that number would stop with
+        # "too many SQL variables". See recall.db.IN_IDS.
         conn.execute(
-            f"UPDATE source_files SET duplicate_of = NULL WHERE id IN ({placeholders})",
-            keeper_ids,
+            f"UPDATE source_files SET duplicate_of = NULL WHERE id {IN_IDS}",
+            (ids_param(keeper_ids),),
         )
     return marked
 

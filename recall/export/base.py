@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
+from ..db import IN_IDS, ids_param
 from ..integrity.honest import Count, Qualifier, qualifiers_for, undated_count
 from ..logging_setup import get_logger
 from ..models import SEVERITY_ORDER
@@ -267,26 +268,24 @@ def build_statement(
     # an unknown timezone - qualify the records rather than the total, and
     # belong in the statement just as much.
     if selection.item_ids:
-        placeholders = ",".join("?" * len(selection.item_ids))
         for row in conn.execute(
             f"SELECT id FROM findings WHERE state IN ('open','acknowledged') "
-            f"AND item_id IN ({placeholders})",
-            selection.item_ids,
+            f"AND item_id {IN_IDS}",
+            (ids_param(selection.item_ids),),
         ):
             finding_ids.add(int(row["id"]))
 
     findings: list[dict] = []
     if finding_ids:
-        placeholders = ",".join("?" * len(finding_ids))
         findings = [
             dict(r)
             for r in conn.execute(
                 f"SELECT id, code, severity, title, detail, estimated_loss, "
                 f"affected_count, period_start, period_end, state, user_note "
-                f"FROM findings WHERE id IN ({placeholders}) "
+                f"FROM findings WHERE id {IN_IDS} "
                 f"ORDER BY CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 "
                 f"WHEN 'medium' THEN 2 ELSE 3 END, id",
-                list(finding_ids),
+                (ids_param(finding_ids),),
             )
         ]
 
