@@ -25,6 +25,7 @@ from datetime import datetime, timezone
 from email.header import decode_header
 from email.message import Message
 from email.utils import getaddresses, parsedate_to_datetime
+from pathlib import Path
 from typing import Iterator
 
 from ..logging_setup import get_logger
@@ -96,6 +97,20 @@ class EmlParser(Parser):
         yield item
 
 
+def _count_separators(path: Path) -> int:
+    """How many ``From_`` lines an mbox holds, without reading it into memory.
+
+    The same test the old regex made - ``^From \\S+`` - applied a line at a
+    time: the line begins "From " and something other than whitespace follows.
+    """
+    count = 0
+    with path.open("rb") as handle:
+        for line in handle:
+            if line.startswith(b"From ") and line[5:6].strip():
+                count += 1
+    return count
+
+
 @register
 class MboxParser(Parser):
     """A Unix mbox: many messages in one file, separated by From_ lines."""
@@ -108,19 +123,21 @@ class MboxParser(Parser):
         if not self._wants(kinds, Kind.MESSAGE):
             return
 
+        # A From_ line at the start of a line is the separator. Counting them
+        # gives the store's own idea of how much it holds, which is what makes
+        # estimated_loss a computed number.
+        #
+        # Counted a line at a time rather than by reading the file and running
+        # a regex over it. An mbox holding a decade of mail is measured in
+        # gigabytes - it is the reason this program exists - and holding one in
+        # memory to count separators, while mailbox.mbox opens the same file
+        # again, ran a real archive out of memory before it read a word of it.
         try:
-            raw = self.path.read_bytes()
+            self.outcome.claimed_count = _count_separators(self.path)
         except OSError as exc:
             self.outcome.error = f"could not be opened: {exc}"
             self.outcome.error_detail = repr(exc)
             return
-
-        # A From_ line at the start of a line is the separator. Counting them
-        # gives the store's own idea of how much it holds, which is what makes
-        # estimated_loss a computed number.
-        self.outcome.claimed_count = len(
-            re.findall(rb"^From \S+.*$", raw, flags=re.MULTILINE)
-        )
 
         produced = 0
         try:
@@ -157,8 +174,23 @@ class MboxParser(Parser):
 
                 try:
                     item = build_message(message, backend=self.name)
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:  # noqa: BLE001 - one message, not the file
+                    # Recorded, not merely logged. This used to be a debug line
+                    # and a continue, so the record left the archive without
+                    # leaving anything behind that said why - the count went
+                    # down and nothing on the Problems screen accounted for it.
                     log.debug("A message in %s could not be built: %s", self.path, exc)
+                    self.outcome.add_finding(
+                        "read_failure", "critical",
+                        f"{self.path.name}: a message could not be read",
+                        f"Position: {key}\n"
+                        f"Last message read successfully: {produced}\n"
+                        f"Exact error: {exc.__class__.__name__}: {exc}",
+                        {
+                            "path": str(self.path), "offset": produced,
+                            "error": f"{exc.__class__.__name__}: {exc}",
+                        },
+                    )
                     continue
 
                 produced += 1

@@ -477,7 +477,7 @@ def _check_ambiguous_legacydn(conn, settings) -> int:
                 code="ambiguous_legacydn",
                 severity=Severity.MEDIUM,
                 title=(
-                    f"An internal Exchange address never resolved to an email address"
+                    "An internal Exchange address never resolved to an email address"
                     + (f": {row['raw_display_name']}" if row["raw_display_name"] else "")
                 ),
                 detail=(

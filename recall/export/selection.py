@@ -12,7 +12,6 @@ every gap in forty years.
 
 from __future__ import annotations
 
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterator
@@ -78,15 +77,25 @@ def export_search(
     limit: int = 100_000,
 ) -> dict[str, Any]:
     """Export exactly what a search returned, with its own integrity statement."""
-    from ..search.query import safe_query
+    from ..api.search import BadDate, month_bound
     from . import exporter_for
 
-    item_ids = _matching_ids(
-        conn,
-        query=query, kind=kind, person_id=person_id, source_id=source_id,
-        folder_id=folder_id, tag=tag, has_attachments=has_attachments,
-        undated=undated, date_from=date_from, date_to=date_to, limit=limit,
-    )
+    # The download link carries the same date filters the search screen does,
+    # so it can be handed the same unreadable one. Both bounds are checked
+    # here, before any work, because "undated" skips them further down and an
+    # unreadable date would otherwise surface much later as a crash.
+    # ExportError is what the endpoint above already turns into a message.
+    try:
+        period_start = month_bound(date_from, end=False)
+        period_end = month_bound(date_to, end=True)
+        item_ids = _matching_ids(
+            conn,
+            query=query, kind=kind, person_id=person_id, source_id=source_id,
+            folder_id=folder_id, tag=tag, has_attachments=has_attachments,
+            undated=undated, date_from=date_from, date_to=date_to, limit=limit,
+        )
+    except BadDate as exc:
+        raise ExportError(str(exc)) from exc
 
     if not item_ids:
         raise ExportError(
@@ -168,8 +177,8 @@ def export_search(
             kinds=[item_kind],
             query=query or None,
             source_ids=[source_id] if source_id else [],
-            period_start=date_from[:7] if date_from else None,
-            period_end=date_to[:7] if date_to else None,
+            period_start=period_start,
+            period_end=period_end,
         )
 
         suffix = f"-{item_kind}" if len(kinds_present) > 1 else ""
@@ -216,9 +225,15 @@ def _combined_workbook(
     12,481 rows across its sheets, or the user is better off being told nothing
     was written.
     """
+    from ..api.search import month_bound
     from ..scan.onedrive import assert_not_onedrive
     from .base import build_statement
     from .xlsx_export import write_combined_workbook
+
+    # Only ever reached through export_search, which has already checked both
+    # bounds, so neither of these can raise here.
+    period_start = month_bound(date_from, end=False)
+    period_end = month_bound(date_to, end=True)
 
     sections: list[tuple[str, list[str], list[dict]]] = []
     per_kind: list[dict[str, Any]] = []
@@ -271,8 +286,8 @@ def _combined_workbook(
         kinds=[k["kind"] for k in per_kind],
         query=query or None,
         source_ids=[source_id] if source_id else [],
-        period_start=date_from[:7] if date_from else None,
-        period_end=date_to[:7] if date_to else None,
+        period_start=period_start,
+        period_end=period_end,
         item_ids=all_ids,
     )
 
@@ -430,7 +445,7 @@ def copy_attachments_out(conn, settings, item_ids: list[int], target: Path) -> d
     Filenames are made safe and de-collided: two different invoices both called
     "invoice.pdf" must both arrive, so the second becomes "invoice (2).pdf".
     """
-    from ..normalize.attachments import BlobStore
+    from ..normalize.attachments import BlobStore, safe_suffix
     from ..scan.onedrive import assert_not_onedrive
 
     target = Path(target)
@@ -457,8 +472,7 @@ def copy_attachments_out(conn, settings, item_ids: list[int], target: Path) -> d
     ]
 
     for row in rows:
-        suffix = Path(str(row["filename"] or "")).suffix.lower()
-        data = store.get(row["content_hash"], suffix)
+        data = store.get(row["content_hash"], safe_suffix(row["filename"]))
         if data is None:
             missing += 1
             manifest.append(

@@ -651,12 +651,24 @@ class PyPffBackend(PstBackend):
 
             data: bytes | None = None
             read_error: str | None = None
-            try:
-                size = attachment.get_size()
-                if size and size > 0:
-                    data = attachment.read_buffer(size)
-            except Exception as exc:  # noqa: BLE001
-                read_error = f"{exc.__class__.__name__}: {exc}"
+            if method == mapi.ATTACH_EMBEDDED_MSG:
+                # A message attached to a message. It has no bytes to read -
+                # it is a sub-item - so reading it here would record an empty
+                # attachment and say nothing. Said plainly instead, so it
+                # reaches the Problems screen rather than looking like a file
+                # that happened to be empty.
+                read_error = (
+                    "This attachment is an email attached to an email. Recall "
+                    "records that it is here, but does not yet open it to read "
+                    "what is inside."
+                )
+            else:
+                try:
+                    size = attachment.get_size()
+                    if size and size > 0:
+                        data = attachment.read_buffer(size)
+                except Exception as exc:  # noqa: BLE001
+                    read_error = f"{exc.__class__.__name__}: {exc}"
 
             item.attachments.append(
                 ParsedAttachment(
@@ -1266,6 +1278,42 @@ def _item_from_com_record(record: dict) -> ParsedItem:
 # ---------------------------------------------------------------------------
 # Selection
 # ---------------------------------------------------------------------------
+
+
+def _recipient_identity(row: dict, kind: str) -> ParsedIdentity | None:
+    """One row of the Recipients sub-item as a participant, or None.
+
+    None rather than an empty ParsedIdentity: a row carrying neither an address
+    nor a name is a row that says nothing, and ParsedIdentity refuses to be
+    built from one - see its __post_init__. Some stores leave such rows behind.
+    """
+    address = mapi.as_text(mapi.first(row, mapi.PR_SMTP_ADDRESS, mapi.PR_EMAIL_ADDRESS))
+    display_name = mapi.as_text(
+        mapi.first(row, mapi.PR_RECIPIENT_DISPLAY_NAME, mapi.PR_DISPLAY_NAME)
+    )
+    if not address and not display_name:
+        return None
+
+    declared = (mapi.as_text(row.get(mapi.PR_ADDRTYPE)) or "").upper()
+
+    if kind == Kind.EVENT:
+        role = Role.ATTENDEE
+        response_status = mapi.TRACK_STATUS.get(
+            mapi.as_int(row.get(mapi.PR_RECIPIENT_TRACKSTATUS)) or 0
+        )
+    else:
+        role = {
+            "from": Role.FROM, "to": Role.TO, "cc": Role.CC, "bcc": Role.BCC,
+        }.get(mapi.RECIPIENT_TYPE.get(mapi.as_int(row.get(mapi.PR_RECIPIENT_TYPE))), Role.TO)
+        response_status = None
+
+    return ParsedIdentity(
+        address=address,
+        address_type=_address_type(address, declared),
+        display_name=display_name,
+        role=role,
+        response_status=response_status,
+    )
 
 
 def _address_type(address: str | None, declared: str) -> str:

@@ -15,7 +15,6 @@ behind a click.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
 
 from ..logging_setup import get_logger
 from ..models import SEVERITY_ORDER, Severity

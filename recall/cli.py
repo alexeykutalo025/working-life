@@ -276,7 +276,7 @@ def index(
                 typer.echo(f"  {done:,} of {total:,}")
 
         with transaction(conn):
-            result = build_index(conn, rebuild=rebuild, progress=show)
+            build_index(conn, rebuild=rebuild, progress=show)
         after = index_health(conn)
     finally:
         conn.close()

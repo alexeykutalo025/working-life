@@ -11,7 +11,7 @@ import sqlite3
 import threading
 from pathlib import Path
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -112,7 +112,18 @@ def create_app(settings: Settings) -> FastAPI:
 
     @app.get("/{path:path}")
     def spa(path: str) -> FileResponse:
-        """Hash routing means every page is index.html."""
+        """Hash routing means every page is index.html.
+
+        Except under /api/. This catch-all is last, so a real endpoint has
+        already matched; anything still here is an endpoint that does not
+        exist, and handing it the HTML shell with a 200 told the caller it had
+        succeeded. The screen then read fields off a page of markup and broke
+        somewhere else entirely, with nothing pointing back to the real cause.
+        """
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(
+                status_code=404, detail=f"There is no /{path} in this version of Recall."
+            )
         return FileResponse(WEB_DIR / "index.html")
 
     return app

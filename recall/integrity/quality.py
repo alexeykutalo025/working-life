@@ -303,7 +303,7 @@ def _check_missing_blobs(conn, settings) -> int:
     The archive says an attachment exists; if the bytes are gone the archive is
     wrong about itself, and that is worth a high severity.
     """
-    from ..normalize.attachments import BlobStore
+    from ..normalize.attachments import BlobStore, safe_suffix
 
     store = BlobStore(settings.blobs_path)
     rows = conn.execute(
@@ -314,10 +314,7 @@ def _check_missing_blobs(conn, settings) -> int:
 
     missing = []
     for row in rows:
-        suffix = ""
-        if row["filename"]:
-            suffix = Path(str(row["filename"])).suffix.lower()
-        if not store.exists(row["content_hash"], suffix):
+        if not store.exists(row["content_hash"], safe_suffix(row["filename"])):
             missing.append(dict(row))
 
     if not missing:

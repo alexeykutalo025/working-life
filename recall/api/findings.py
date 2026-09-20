@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..logging_setup import get_logger
-from ..models import SEVERITY_ORDER, FindingState, Severity
+from ..models import Severity
 
 log = get_logger("api.findings")
 

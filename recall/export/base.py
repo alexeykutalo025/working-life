@@ -14,14 +14,13 @@ A subclass that wants to skip it has nowhere to put that decision.
 from __future__ import annotations
 
 import abc
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
 from ..db import IN_IDS, ids_param
-from ..integrity.honest import Count, Qualifier, qualifiers_for, undated_count
+from ..integrity.honest import Qualifier, qualifiers_for, undated_count
 from ..logging_setup import get_logger
 from ..models import SEVERITY_ORDER
 

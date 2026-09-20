@@ -585,11 +585,10 @@ def hydrate_plan(request: Request, body: HydrateRequest) -> dict[str, Any]:
     if not body.ids:
         raise HTTPException(status_code=400, detail="No files were chosen.")
 
-    placeholders = ",".join("?" * len(body.ids))
     rows = conn.execute(
         f"SELECT id, path, size_bytes FROM source_files "
-        f"WHERE id IN ({placeholders}) AND is_placeholder = 1",
-        body.ids,
+        f"WHERE id {IN_IDS} AND is_placeholder = 1",
+        (ids_param(body.ids),),
     ).fetchall()
 
     if not rows:
@@ -632,11 +631,10 @@ def hydrate_start(request: Request, body: HydrateRequest) -> dict[str, Any]:
 
     settings = _settings(request)
     conn = _conn(request)
-    placeholders = ",".join("?" * len(body.ids)) if body.ids else "NULL"
     rows = conn.execute(
         f"SELECT id, path, size_bytes FROM source_files "
-        f"WHERE id IN ({placeholders}) AND is_placeholder = 1",
-        body.ids,
+        f"WHERE id {IN_IDS} AND is_placeholder = 1",
+        (ids_param(body.ids or []),),
     ).fetchall()
     if not rows:
         raise HTTPException(status_code=400, detail="Nothing to download.")
@@ -878,8 +876,8 @@ def extract_plan(request: Request, ids: str = "") -> dict[str, Any]:
             raise HTTPException(
                 status_code=400, detail="The file numbers were not numbers."
             ) from exc
-        where += f" AND id IN ({','.join('?' * len(chosen))})"
-        params.extend(chosen)
+        where += f" AND id {IN_IDS}"
+        params.append(ids_param(chosen))
 
     row = conn.execute(
         f"SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes, "

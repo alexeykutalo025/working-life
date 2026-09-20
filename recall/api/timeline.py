@@ -444,7 +444,7 @@ def delete_era(request: Request, era_id: int) -> dict:
 
 @router.get("/export/formats")
 def export_formats() -> dict[str, Any]:
-    from ..export import FORMATS, KIND_SPECS
+    from ..export import KIND_SPECS
 
     return {
         "formats": [

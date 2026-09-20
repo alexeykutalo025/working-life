@@ -92,7 +92,7 @@ class MarkdownExporter(Exporter):
                 "and appear under \"No date\" at the end.\n"
             )
         lines.append(
-            f">\n> The full detail is in `_integrity.txt`, beside this file.\n"
+            ">\n> The full detail is in `_integrity.txt`, beside this file.\n"
         )
         return "".join(lines)
 

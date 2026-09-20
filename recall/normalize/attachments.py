@@ -88,7 +88,7 @@ class BlobStore:
         assert_not_onedrive(self.root)
 
         content_hash = hash_bytes(data)
-        suffix = _safe_suffix(filename)
+        suffix = safe_suffix(filename)
         target = self.path_for(content_hash, suffix)
 
         if target.exists() and target.stat().st_size == len(data):
@@ -103,29 +103,33 @@ class BlobStore:
 
         return StoredBlob(content_hash, target, len(data), already_present=False)
 
-    def get(self, content_hash: str, suffix: str = "") -> bytes | None:
+    def locate(self, content_hash: str, suffix: str = "") -> Path | None:
+        """The file holding these bytes, or None.
+
+        The path rather than the bytes, because a caller serving a download
+        wants the file and reading a 40 MB attachment into memory to decide it
+        is there helps nobody. Everything else here is expressed in terms of
+        this, so "where is it" cannot disagree with "is it there".
+        """
         path = self.path_for(content_hash, suffix)
         if path.exists():
-            return path.read_bytes()
+            return path
         # The suffix is cosmetic, so a hash whose extension was recorded
-        # differently is still found.
+        # differently is still found. Sorted, so that when several match every
+        # caller picks the same one.
         folder = self.root / content_hash[:2] / content_hash[2:4]
         if folder.is_dir():
-            for candidate in folder.glob(content_hash + "*"):
+            for candidate in sorted(folder.glob(content_hash + "*")):
                 if candidate.is_file() and not candidate.name.endswith(".part"):
-                    return candidate.read_bytes()
+                    return candidate
         return None
 
+    def get(self, content_hash: str, suffix: str = "") -> bytes | None:
+        found = self.locate(content_hash, suffix)
+        return found.read_bytes() if found is not None else None
+
     def exists(self, content_hash: str, suffix: str = "") -> bool:
-        if self.path_for(content_hash, suffix).exists():
-            return True
-        folder = self.root / content_hash[:2] / content_hash[2:4]
-        if not folder.is_dir():
-            return False
-        return any(
-            c.is_file() and not c.name.endswith(".part")
-            for c in folder.glob(content_hash + "*")
-        )
+        return self.locate(content_hash, suffix) is not None
 
     def total_bytes(self) -> int:
         if not self.root.exists():
@@ -133,7 +137,7 @@ class BlobStore:
         return sum(f.stat().st_size for f in self.root.rglob("*") if f.is_file())
 
 
-def _safe_suffix(filename: str | None) -> str:
+def safe_suffix(filename: str | None) -> str:
     """A file extension safe to put on a path, or nothing.
 
     Never trusts the attachment's name: "..\\..\\startup\\evil.exe" must not
@@ -165,7 +169,7 @@ def extract_text(
     data: bytes, filename: str | None, mime_type: str | None, *, size_cap: int = 0
 ) -> ExtractedText:
     """Pull searchable text out of an attachment. Never raises."""
-    suffix = _safe_suffix(filename)
+    suffix = safe_suffix(filename)
     if not suffix and mime_type:
         guessed = mimetypes.guess_extension(mime_type.split(";")[0].strip())
         suffix = (guessed or "").lower()
@@ -413,7 +417,7 @@ def store_attachments(
 
         # Inline images are stored but never text-extracted: a signature logo
         # has no words, and there are a great many of them.
-        if attachment.is_inline and _safe_suffix(attachment.filename) in BINARY_EXTENSIONS:
+        if attachment.is_inline and safe_suffix(attachment.filename) in BINARY_EXTENSIONS:
             extracted = ExtractedText(None, "unsupported", "an inline image")
         else:
             extracted = extract_text(

@@ -26,7 +26,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from .config import Settings
-from .db import REACHABLE_SQL, log_error, read_path, transaction
+from .db import IN_IDS, REACHABLE_SQL, ids_param, log_error, read_path, transaction
 from .integrity.engine import Finding, record_finding
 from .integrity.sources import (
     record_claimed_count,
@@ -35,7 +35,7 @@ from .integrity.sources import (
     record_sampled,
 )
 from .logging_setup import get_logger
-from .models import Kind, ParsedItem, ParseState, Role, Severity
+from .models import Kind, ParsedItem, ParseState, Severity
 from .normalize.dedup import dedup_key_for
 from .normalize.attachments import BlobStore, store_attachments
 from .normalize.people import PeopleResolver
@@ -197,9 +197,8 @@ class Extractor:
         ]
         params: list = []
         if source_ids:
-            ids = list(source_ids)
-            sql.append(f"AND id IN ({','.join('?' * len(ids))})")
-            params.extend(ids)
+            sql.append(f"AND id {IN_IDS}")
+            params.append(ids_param(source_ids))
         if resume:
             # A file left in 'parsing' was interrupted; it is read again from
             # the start, because a half-read file is not a read file.

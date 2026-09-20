@@ -13,6 +13,7 @@ Two rules from the spec shape what these endpoints return:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -57,6 +58,15 @@ def search(
     from ..search.query import safe_query
 
     conn = _conn(request)
+
+    # Both bounds checked once, before anything else runs, so an unreadable
+    # date cannot reach a helper further down and come back as a stack trace.
+    try:
+        period_start = month_bound(date_from, end=False)
+        period_end = month_bound(date_to, end=True)
+    except BadDate as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     parsed = safe_query(conn, q)
 
     where: list[str] = []
@@ -150,9 +160,7 @@ def search(
 
     health = index_health(conn)
     qualifiers = qualifiers_for(
-        conn,
-        period_start=date_from[:7] if date_from else None,
-        period_end=date_to[:7] if date_to else None,
+        conn, period_start=period_start, period_end=period_end
     )
 
     return {
@@ -214,6 +222,12 @@ def search_table(
     limit = max(1, min(int(limit), TABLE_MAX))
     offset = max(0, int(offset))
 
+    try:
+        period_start = month_bound(date_from, end=False)
+        period_end = month_bound(date_to, end=True)
+    except BadDate as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     item_ids = _matching_ids(
         conn, query=q, kind=kind, person_id=person_id, source_id=source_id,
         folder_id=folder_id, tag=tag, has_attachments=has_attachments,
@@ -273,8 +287,8 @@ def search_table(
         conn,
         kinds=[showing] if showing else None,
         source_ids=[source_id] if source_id else [],
-        period_start=date_from[:7] if date_from else None,
-        period_end=date_to[:7] if date_to else None,
+        period_start=period_start,
+        period_end=period_end,
     )
 
     return {
@@ -534,7 +548,7 @@ def get_item(request: Request, item_id: int) -> dict[str, Any]:
 @router.get("/attachments/{attachment_id}")
 def get_attachment(request: Request, attachment_id: int):
     """Serve one attachment's bytes out of the blob store."""
-    from ..normalize.attachments import BlobStore
+    from ..normalize.attachments import BlobStore, safe_suffix
 
     conn = _conn(request)
     settings = _settings(request)
@@ -553,23 +567,22 @@ def get_attachment(request: Request, attachment_id: int):
             ),
         )
 
-    from pathlib import Path
-
-    suffix = Path(str(row["filename"] or "")).suffix.lower()
+    # safe_suffix, not Path(...).suffix, because that is the rule the blob was
+    # written under. Computing it differently here looked for a file that was
+    # never created, found the real one, and then served the name it had made
+    # up - so an attachment that was present downloaded as a server error.
     store = BlobStore(settings.blobs_path)
-    path = store.path_for(row["content_hash"], suffix)
+    path = store.locate(row["content_hash"], safe_suffix(row["filename"]))
 
-    if not path.exists():
-        data = store.get(row["content_hash"], suffix)
-        if data is None:
-            raise HTTPException(
-                status_code=410,
-                detail=(
-                    "This attachment is listed in the archive but its saved copy "
-                    "is missing from the attachments folder. Re-read the file it "
-                    "came from and it will be saved again."
-                ),
-            )
+    if path is None:
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "This attachment is listed in the archive but its saved copy "
+                "is missing from the attachments folder. Re-read the file it "
+                "came from and it will be saved again."
+            ),
+        )
 
     return FileResponse(
         path,
@@ -636,19 +649,45 @@ def rebuild_index(request: Request, body: IndexRequest) -> dict[str, Any]:
     }
 
 
+#: A date the filter boxes will accept: a year, a year and month, or a full
+#: date. The same shape the screen enforces before it sends one, so the two
+#: cannot disagree about what a date is. See dateInput() in screens/search.js.
+_BOUND = re.compile(r"^\d{4}(-\d{2}(-\d{2})?)?$")
+
+
+class BadDate(ValueError):
+    """A date filter Recall cannot read. Carries the sentence to show."""
+
+
+def _bound(value: str) -> str:
+    """The filter value, checked. Raises BadDate with wording for the user.
+
+    Without this the helpers below reached int() on whatever arrived and the
+    search answered with a stack trace. The typed-in boxes were already guarded;
+    the URL was not, and #/search?to=20x3 is a link somebody can bookmark.
+    """
+    value = value.strip()
+    if not _BOUND.match(value):
+        raise BadDate(
+            f'"{value}" is not a date Recall can read. '
+            "Use a year, a year and month, or a full date."
+        )
+    return value
+
+
 def _start_of(value: str) -> str:
     """'2003' or '2003-04' or '2003-04-14' to an inclusive lower bound."""
-    value = value.strip()
+    value = _bound(value)
     if len(value) == 4:
         return f"{value}-01-01T00:00:00Z"
     if len(value) == 7:
         return f"{value}-01T00:00:00Z"
-    return f"{value[:10]}T00:00:00Z"
+    return f"{value}T00:00:00Z"
 
 
 def _after(value: str) -> str:
     """An exclusive upper bound, so 'to 2003' includes all of 2003."""
-    value = value.strip()
+    value = _bound(value)
     if len(value) == 4:
         return f"{int(value) + 1:04d}-01-01T00:00:00Z"
     if len(value) == 7:
@@ -659,7 +698,25 @@ def _after(value: str) -> str:
     from datetime import datetime, timedelta
 
     try:
-        day = datetime.strptime(value[:10], "%Y-%m-%d") + timedelta(days=1)
+        day = datetime.strptime(value, "%Y-%m-%d") + timedelta(days=1)
         return day.strftime("%Y-%m-%dT00:00:00Z")
     except ValueError:
-        return f"{value[:10]}T23:59:59Z"
+        # A date that matched the shape but is not a real day, like 2003-02-31.
+        return f"{value}T23:59:59Z"
+
+
+def month_bound(value: str | None, *, end: bool) -> str | None:
+    """A filter value as the 'YYYY-MM' a coverage period is measured in.
+
+    Taking value[:7] looks like it does this and does not: a bare year - which
+    the filter box invites, and its placeholder spells out - stays "2003". A
+    period end of "2003" then reads as the month before February and excludes
+    every gap in the year the user asked about, so the total beside it stops
+    admitting what is missing. That is the one thing a count here must do.
+    """
+    if not value:
+        return None
+    value = _bound(value)
+    if len(value) == 4:
+        return f"{value}-12" if end else f"{value}-01"
+    return value[:7]

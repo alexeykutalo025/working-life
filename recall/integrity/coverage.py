@@ -27,7 +27,6 @@ banner. Explaining never deletes anything.
 
 from __future__ import annotations
 
-import json
 import re
 import statistics
 from datetime import datetime, timezone

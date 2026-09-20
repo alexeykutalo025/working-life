@@ -285,9 +285,20 @@ def undated_count(conn, kind: str | None = None) -> int:
 
 
 def _month_after(month: str) -> str:
-    """'2003-12' to '2004-01-01T00:00:00Z', for an exclusive upper bound."""
+    """'2003-12' to '2004-01-01T00:00:00Z', for an exclusive upper bound.
+
+    A period is 'YYYY-MM' and nothing else. A bare year used to be accepted
+    here and quietly treated as January, so a count over 2003 was bounded at
+    the 1st of February and stopped admitting the eleven months it had left
+    out. Refused now, so the next caller to get it wrong hears about it.
+    """
     year, _, mon = month.partition("-")
-    y, m = int(year), int(mon or 1)
+    if not (len(year) == 4 and year.isdigit() and len(mon) == 2 and mon.isdigit()):
+        raise ValueError(
+            f"a period is 'YYYY-MM'; got {month!r}. "
+            "See recall.api.search.month_bound for turning a filter into one."
+        )
+    y, m = int(year), int(mon)
     if m >= 12:
         return f"{y + 1:04d}-01-01T00:00:00Z"
     return f"{y:04d}-{m + 1:02d}-01T00:00:00Z"
