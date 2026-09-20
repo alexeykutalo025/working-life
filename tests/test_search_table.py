@@ -188,6 +188,181 @@ def test_the_total_is_the_whole_result_not_the_page(client):
     assert body["total"]["value"] >= len(body["rows"])
 
 
+# --- sorting by a column --------------------------------------------------
+#
+# The rule these hold: clicking a heading sorts every record that matched, and
+# the page is then cut out of that. Sorting the fifty rows already on screen
+# would be a great deal easier and would tell the user something untrue - that
+# the top of the table is the top of the result set.
+
+
+def test_every_sortable_column_is_sql_the_database_accepts(conn):
+    """One typo in one expression, and only that column's table is a 500.
+
+    Nothing else here can catch that: the fixtures hold messages, calendar
+    entries and contacts, so tasks, notes, and any column a fixture happens
+    not to fill, would go out untried.
+    """
+    from recall.api.search import _SORT_SQL, _order_by
+
+    for column in _SORT_SQL:
+        for descending in (False, True):
+            conn.execute(
+                "SELECT i.id FROM items i "
+                f"ORDER BY {_order_by(column, descending=descending)} LIMIT 1"
+            ).fetchall()
+
+
+def test_the_columns_offered_for_sorting_are_columns_the_table_has(client):
+    for kind in ("message", "event"):
+        body = client.get("/api/search/table", params={"kind": kind}).json()
+        assert set(body["sort"]["sortable"]) <= set(body["columns"])
+        assert body["sort"]["sortable"], f"nothing on the {kind} table sorts"
+
+
+def test_clicking_a_heading_sorts_by_that_column(client):
+    body = client.get("/api/search/table", params={
+        "kind": "message", "limit": 500, "sort": "subject",
+    }).json()
+
+    subjects = [r["subject"] for r in body["rows"]]
+    assert subjects == sorted(subjects, key=str.casefold)
+    assert body["sort"]["column"] == "subject"
+    assert body["sort"]["direction"] == "asc"
+
+
+def test_clicking_it_again_sorts_the_other_way(client):
+    up = client.get("/api/search/table", params={
+        "kind": "message", "limit": 500, "sort": "subject",
+    }).json()
+    down = client.get("/api/search/table", params={
+        "kind": "message", "limit": 500, "sort": "subject", "direction": "desc",
+    }).json()
+
+    assert down["sort"]["direction"] == "desc"
+    assert [r["item_id"] for r in down["rows"]] == [
+        r["item_id"] for r in reversed(up["rows"])
+    ]
+
+
+def test_an_alphabet_is_not_the_ascii_order(client):
+    """A lower-case subject belongs among the words, not after all of them."""
+    body = client.get("/api/search/table", params={
+        "kind": "message", "limit": 500, "sort": "subject",
+    }).json()
+
+    folded = [r["subject"].casefold() for r in body["rows"] if r["subject"]]
+    assert folded == sorted(folded)
+
+
+def test_the_sort_covers_the_whole_result_set_not_just_the_page(client):
+    """The failure this exists for: a page sorted after it was cut."""
+    everything = client.get("/api/search/table", params={
+        "kind": "message", "limit": 500, "sort": "subject",
+    }).json()
+    first_page = client.get("/api/search/table", params={
+        "kind": "message", "limit": 2, "sort": "subject",
+    }).json()
+
+    assert len(everything["rows"]) > 2, "this archive is too small to prove it"
+    assert [r["item_id"] for r in first_page["rows"]] == [
+        r["item_id"] for r in everything["rows"][:2]
+    ]
+
+
+def test_paging_through_a_sorted_table_shows_each_record_once(client):
+    everything = client.get("/api/search/table", params={
+        "kind": "message", "limit": 500, "sort": "from_name",
+    }).json()
+
+    seen = []
+    for offset in range(0, len(everything["rows"]), 2):
+        page = client.get("/api/search/table", params={
+            "kind": "message", "limit": 2, "sort": "from_name", "offset": offset,
+        }).json()
+        seen.extend(r["item_id"] for r in page["rows"])
+
+    assert seen == [r["item_id"] for r in everything["rows"]]
+    assert len(set(seen)) == len(seen), "a record turned up on two pages"
+
+
+def test_an_empty_cell_goes_to_the_end_whichever_way_the_column_runs(client):
+    """A screenful of blanks is never what clicking a heading was for."""
+    for direction in ("asc", "desc"):
+        body = client.get("/api/search/table", params={
+            "kind": "message", "limit": 500, "sort": "attachment_names",
+            "direction": direction,
+        }).json()
+
+        filled = [bool(r["attachment_names"]) for r in body["rows"]]
+        assert filled == sorted(filled, reverse=True), (
+            f"blank cells came first going {direction}"
+        )
+
+
+def test_a_column_that_cannot_be_sorted_faithfully_is_not_offered(client):
+    """``data_quality`` is a sentence written in Python out of several facts.
+
+    Ordering by an expression that only approximates it would produce a table
+    that looks unsorted, which is worse than a heading that does not offer to
+    sort at all.
+    """
+    body = client.get("/api/search/table", params={"kind": "message"}).json()
+
+    assert "data_quality" in body["columns"]
+    assert "data_quality" not in body["sort"]["sortable"]
+
+
+def test_asking_for_a_sort_that_cannot_be_done_is_ignored_not_an_error(client):
+    plain = client.get("/api/search/table", params={"kind": "message"}).json()
+
+    for column in ("data_quality", "no_such_column", "x'; DROP TABLE items; --"):
+        body = client.get("/api/search/table", params={
+            "kind": "message", "sort": column,
+        }).json()
+        assert body["sort"]["column"] is None, f"{column!r} was let through"
+        assert [r["item_id"] for r in body["rows"]] == [
+            r["item_id"] for r in plain["rows"]
+        ]
+
+
+def test_a_sort_belonging_to_another_kind_is_dropped_and_said_to_be(client):
+    """Switching to the calendar with "From" sorted must not leave a heading
+    drawing an arrow over an order that was never applied."""
+    body = client.get("/api/search/table", params={
+        "kind": "event", "sort": "from_name",
+    }).json()
+
+    assert body["sort"]["column"] is None
+    assert "from_name" not in body["columns"]
+
+
+def test_the_rows_come_back_in_the_order_they_were_sorted_into(client):
+    """The row builders order their own queries; the page order has to win."""
+    body = client.get("/api/search/table", params={
+        "kind": "message", "limit": 500, "sort": "date", "direction": "desc",
+    }).json()
+
+    dates = [r["date"] for r in body["rows"] if r["date"]]
+    assert dates == sorted(dates, reverse=True)
+
+
+def test_a_contact_card_that_will_not_parse_does_not_break_the_sort(conn):
+    """``json_extract`` on broken JSON is an error, not an empty cell."""
+    from recall.api.search import _order_by
+
+    conn.execute(
+        "INSERT INTO items (kind, dedup_key, subject, contact_json) "
+        "VALUES ('contact', 'broken-card', 'Someone', '{not json')"
+    )
+    for column in ("display_name", "given_name", "phone_mobile"):
+        rows = conn.execute(
+            "SELECT i.id FROM items i WHERE i.kind = 'contact' "
+            f"ORDER BY {_order_by(column, descending=False)}"
+        ).fetchall()
+        assert rows, f"the broken card took {column} down with it"
+
+
 # --- the download ---------------------------------------------------------
 
 

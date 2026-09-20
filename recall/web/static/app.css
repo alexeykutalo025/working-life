@@ -482,6 +482,18 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 
+/* A heading that puts the table in order of its column. `th button` above
+   already gives it the heading's own type; this lays the arrow out beside the
+   words and keeps it there whether or not this is the column being sorted by,
+   so clicking one heading does not shift every other heading sideways. */
+.col-sort {
+  display: flex; align-items: baseline; gap: var(--sp-2);
+  width: 100%; white-space: normal;
+}
+.col-sort__name { flex: 1 1 auto; }
+.col-sort__arrow { flex: 0 0 auto; color: var(--text-muted); font-size: 0.8em; }
+.col-sort.is-sorted, .col-sort.is-sorted .col-sort__arrow { color: var(--accent); }
+
 .col-grip {
   position: absolute; top: 0; right: 0; bottom: 0; width: 14px;
   display: flex; align-items: center; justify-content: center;
@@ -511,6 +523,47 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 
 .cell-name { font-weight: 600; word-break: break-word; }
 .cell-path { color: var(--text-muted); font-size: var(--size-small); word-break: break-all; }
+
+/* A second line under a cell's value that is prose, not a path. It looks like
+   .cell-path and was written as one, but .cell-path breaks anywhere - which is
+   right for C:\Users\...\old-mail.ost and wrong for a sentence: "saved Outlook
+   message" was arriving in the Type column as "saved Outlook mess / age". */
+.cell-note { color: var(--text-muted); font-size: var(--size-small); }
+
+/* A list of files, whose rows run to three and four lines each - a name, the
+   folder it is in, and whatever had to be said about the file. Following one
+   of those across seven columns with nothing behind it means keeping your
+   place by eye alone, so every other row gets a band. Hover and a ticked row
+   have to be told apart from the banding and from each other, which is why all
+   three are set here rather than left to the plain table rules above. */
+.table--files tbody tr:nth-child(even) { background: var(--surface); }
+.table--files tbody tr:hover { background: var(--surface-2); }
+.table--files tbody tr.is-selected { background: var(--accent-soft); }
+
+/* The header row is offset from the top of its own box, not from the top of
+   the window.
+   
+   `th` is sticky at `top: var(--masthead-h)`, which was meant to park it under
+   the masthead. But .table-wrap sets `overflow-x: auto`, and a box that scrolls
+   on one axis is a scroll container on both - so the header sticks inside
+   .table-wrap rather than to the page, and that 72px pushes it 72px DOWN from
+   the top of the table instead. Two things follow, and both are visible on
+   every screenshot of this list: an empty band the height of the masthead
+   above the header, and a header sitting on top of the first row with an
+   opaque background and a z-index, hiding whichever file sorts first.
+   
+   Zero is the honest number here. The header cannot pin to the masthead while
+   .table-wrap scrolls sideways - and sideways is the one thing section 10 will
+   not trade away - so it stays at the top of its table, where it was drawn. */
+.table--files thead th { top: 0; }
+
+/* The header still has to read as something above the rows rather than the
+   first of them. Two pixels of border was all that said so. */
+.table--files thead th { box-shadow: 0 6px 12px -8px rgba(0, 0, 0, 0.45); }
+
+/* The honest-count marker sat hard against the folder path above it, so a row
+   read as one run of small type with a red line somewhere inside it. */
+.table--files tbody .qualified-note { margin-top: var(--sp-2); }
 
 /* ==========================================================================
    Tags: severity, state and kind. Word first, colour second, shape third.
@@ -556,9 +609,6 @@ input[type="date"], select, textarea {
   width: 100%; max-width: 100%;
 }
 input:hover, select:hover, textarea:hover { border-color: var(--accent); }
-
-/* The one enormous box on the Search screen. It was sized inline. */
-.input--lead { font-size: 22px; min-height: 56px; }
 textarea { min-height: 96px; line-height: var(--line); resize: vertical; }
 
 input[type="checkbox"], input[type="radio"] {
@@ -684,6 +734,21 @@ summary {
   min-height: var(--tap); display: flex; align-items: center;
 }
 summary:hover { color: var(--accent); }
+
+/* A summary is a flex row so its text and any count beside it line up on one
+   baseline - and a browser drops the disclosure triangle the moment display is
+   anything other than list-item. Every closed <details> in the program has
+   therefore been a bordered box with one line of text in it and nothing to say
+   there is more underneath. The triangle is drawn back on here. The two resets
+   are for a browser that keeps its own marker under flex, so that one does not
+   end up with two. */
+summary::before {
+  content: "\25B8";                       /* pointing right: closed */
+  flex: none; margin-right: var(--sp-3);
+}
+details[open] > summary::before { content: "\25BE"; }   /* pointing down: open */
+summary::marker { content: ""; }
+summary::-webkit-details-marker { display: none; }
 details > *:not(summary) { margin-top: var(--sp-3); }
 
 pre.raw {
@@ -953,15 +1018,155 @@ tbody tr.is-unreadable td { cursor: not-allowed; }
 /* The one horizontal rule in the application. */
 .rule { margin: var(--sp-5) 0; border: 0; border-top: 1px solid var(--border); }
 
-/* A result you can open. The keyboard moves through these, so the highlight
-   has to be visible - the arrow keys used to move an invisible selection. */
+/* ==========================================================================
+   The Search screen
+
+   Scoped to `.search` wherever a rule touches something shared, because
+   `.card`, `.row`, `.stack` and `tbody tr` belong to six other screens too.
+   The readability rules at the top of this file still hold here: every size
+   below is at or above the floor, every target is still 44px, and no colour
+   is left carrying a meaning on its own.
+   ========================================================================== */
+
+/* --- the box everything starts in -------------------------------------- */
+
+/* The card sits on --surface so that the box inside it, which is on --bg,
+   reads as the thing to type in rather than as one more panel. */
+.search__hero {
+  background: var(--surface);
+  border-color: var(--border-strong);
+}
+.search__hero > label {
+  font-size: var(--size-h3);
+  margin-bottom: var(--sp-3);
+}
+.search__hero .field__help { margin-top: var(--sp-3); }
+
+/* The one control the whole screen is built around, so it gets the room.
+   Scoped rather than bare: `input[type="search"]` up in Forms is the stronger
+   selector, and a bare `.input--lead` loses to it on every property it sets -
+   which is why this box has been rendering at the ordinary 17px and 44px ever
+   since it stopped being sized inline. */
+.search .input--lead {
+  font-size: 22px;
+  min-height: 60px;
+  padding: var(--sp-2) var(--sp-4);
+  border-radius: 14px;
+}
+
+/* The focus ring rounds whatever it lands on down to 3px, which on this screen
+   means a 60px box and a pill-shaped chip both go square the moment they are
+   focused. The ring itself is untouched; only the corners are put back. */
+.search .input--lead:focus-visible { border-radius: 14px; }
+.search .chip:focus-visible { border-radius: 18px; }
+.search .btn:focus-visible,
+.search .card:focus-visible,
+.search input:focus-visible,
+.search select:focus-visible { border-radius: var(--radius); }
+
+/* --- the sidebar -------------------------------------------------------- */
+
+/* The filters follow the results down the page. Without this, narrowing a
+   search of five hundred records means scrolling to the top for the control
+   and back down again to see what it did. */
+.search__side {
+  position: sticky;
+  top: calc(var(--masthead-h, 68px) + var(--sp-4));
+  max-height: calc(100vh - var(--masthead-h, 68px) - var(--sp-6));
+  overflow-y: auto;
+  /* A focus ring stands 2px proud of its control, and the scroll edge would
+     otherwise cut the one on the last dropdown in half. */
+  padding: 3px;
+}
+.search__side .filters { margin-bottom: 0; }
+
+/* Below this the sidebar is a band across the top of the page, and a band
+   that sticks is a band in the way. */
+@media (max-width: 1100px) {
+  .search__side {
+    position: static; max-height: none; overflow: visible; padding: 0;
+  }
+}
+
+/* --- the count, and what is true about it ------------------------------- */
+
+.search__count {
+  align-items: baseline;
+  gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-4);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+}
+.search__count .stat__value--inline { font-size: 32px; }
+
+/* The qualifier and its "Why?" take a line of their own. Left loose in the
+   count row they wrapped apart, and the link ended up sitting under a warning
+   it no longer looked attached to. */
+.search__caveat {
+  flex: 1 1 100%;
+  display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap;
+}
+
+/* --- show as, and saving ------------------------------------------------ */
+
+.search__views { gap: var(--sp-3); margin-bottom: var(--sp-4); }
+
+/* Two views of one thing, so the two buttons are joined into one control
+   instead of reading as two unrelated actions. Which one is on is still said
+   three ways: the word, aria-pressed, and the filled face. */
+.search__views .btn-row { gap: 0; }
+.search__views .btn { border-radius: 0; margin-left: -2px; }
+.search__views .btn:first-child {
+  border-radius: var(--radius) 0 0 var(--radius); margin-left: 0;
+}
+.search__views .btn:last-child { border-radius: 0 var(--radius) var(--radius) 0; }
+.search__views .btn--primary { position: relative; z-index: 1; }
+
+/* Saving is one job, so its obvious button and its "other ways" sit in one
+   band, rather than as two loose rows between the results and the table. */
+.search__export {
+  margin-bottom: var(--sp-5);
+  padding: var(--sp-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.search__export > *:last-child { margin-bottom: 0; }
+.search__export details { background: var(--bg); }
+
+.search__kinds { margin-bottom: var(--sp-4); }
+
+/* --- a result you can open ---------------------------------------------- */
+
+/* The keyboard moves through these, so the highlight has to be visible - the
+   arrow keys used to move an invisible selection. */
 .search-result { cursor: pointer; }
+.search-result:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-lift);
+}
 .search-result.is-selected,
 .search-result:focus-visible {
   border-color: var(--accent);
   box-shadow: inset 4px 0 0 var(--accent);
 }
+
+/* .card carries its own bottom margin and .stack adds another on top of it,
+   which left 40px of nothing between one result and the next. */
+.search .stack > .search-result { margin-bottom: 0; }
+
 tbody tr.is-clickable { cursor: pointer; }
+
+/* --- the table ---------------------------------------------------------- */
+
+/* Thirteen narrow columns of dates and addresses are hard to read across, so
+   the rows are banded. The selected row is restated after the band because it
+   is a selector of the same weight and would otherwise lose to it. */
+.search tbody tr:nth-child(even) { background: var(--surface); }
+.search tbody tr:hover { background: var(--surface-2); }
+.search tbody tr.is-selected {
+  background: var(--accent-soft); box-shadow: inset 4px 0 0 var(--accent);
+}
 
 /* ==========================================================================
    Filters, and the chips that say which are on
@@ -971,15 +1176,39 @@ tbody tr.is-clickable { cursor: pointer; }
    be taken off on its own, which a "Clear all filters" button never allowed.
    ========================================================================== */
 
+.filters { padding: var(--sp-4) var(--sp-5) var(--sp-5); }
+
 .filters__head {
   display: flex; align-items: center; justify-content: space-between;
   gap: var(--sp-3); flex-wrap: wrap;
-  margin-bottom: var(--sp-4); padding-bottom: var(--sp-3);
+  margin-bottom: var(--sp-2); padding-bottom: var(--sp-3);
   border-bottom: 1px solid var(--border);
 }
 
-.filters__group { margin-bottom: var(--sp-3); }
-.filters__group > summary { font-weight: 650; }
+/* Each group used to be a bordered, rounded box inside another bordered,
+   rounded box: five panels nested in a panel, which reads as clutter rather
+   than as structure. They are sections of one card now, divided by a rule. */
+.filters__group {
+  border: 0; border-radius: 0; background: none;
+  padding: 0; margin: 0;
+  border-top: 1px solid var(--border);
+}
+.filters__group:first-of-type { border-top: 0; }   /* the head drew that line */
+.filters__group[open] { padding-bottom: var(--sp-4); }
+.filters__group > summary {
+  font-weight: 650;
+  padding: var(--sp-3) var(--sp-2);
+  border-radius: var(--radius-sm);
+}
+.filters__group > summary:hover { background: var(--surface-2); }
+
+/* "Order by" is not inside a group, so it needs the divider the groups give
+   themselves. */
+.filters > .field {
+  border-top: 1px solid var(--border);
+  margin-top: var(--sp-1); margin-bottom: 0;
+  padding-top: var(--sp-4);
+}
 .filters__badge:empty { display: none; }
 .filters__badge {
   display: inline-flex; align-items: center; justify-content: center;
@@ -1093,6 +1322,51 @@ tbody tr.is-clickable { cursor: pointer; }
 .pager__size select { width: auto; }
 
 /* ==========================================================================
+   Files found
+
+   Everything on this screen used to arrive at one weight: four numbers, the
+   report from the last run, the button that does the whole job, the filters,
+   and the list the page exists for - each a full-width block with the same
+   border and the same gap under it. Flat like that there is nowhere for the
+   eye to land, and the list is the furthest thing down. Nothing here changes
+   a control or a word; it only puts the blocks in an order.
+   ========================================================================== */
+
+/* The button that finds, downloads and reads everything. It is the thing most
+   people came to press, and it was the third bordered box down looking exactly
+   like the two above it. */
+.sources .card--hero {
+  border-color: var(--accent);
+  border-top: 4px solid var(--accent);
+  box-shadow: var(--shadow-lift);
+}
+.sources .card--hero .card__title { border-bottom-color: var(--accent); }
+
+/* The one count that means something has to be done. The number already
+   carries a dotted underline and a sentence saying what is wrong, so the rule
+   down the edge is a third signal rather than the only one - and it is drawn
+   from the presence of that sentence, so a screen with nothing blocked gets no
+   red edge. */
+.sources .stat:has(.stat__qualifier) { border-left: 4px solid var(--critical); }
+
+/* "Refresh this list" had a band of screen to itself directly above the
+   filters. It refreshes the list those filters narrow, so it belongs on the
+   same bar - which also gives the search box the width it always wanted. */
+.sources .toolbar .field:first-child { flex: 1 1 320px; }
+.sources .toolbar .btn { margin-left: auto; }
+
+/* What is ticked, and what can be done with it. This is the only thing on the
+   screen that changes as you work down the list, and as a bare line of text
+   between two margins it read as a caption on the table below. It is only
+   drawn as a bar when there is something in it. */
+.sources .selection-bar {
+  padding: var(--sp-3) var(--sp-4);
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius);
+}
+
+/* ==========================================================================
    Utilities
    ========================================================================== */
 
@@ -1138,6 +1412,52 @@ mark {
 @media (max-width: 1100px) {
   .with-sidebar { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ==========================================================================
+   The timeline chart
+   ========================================================================== */
+
+/* The chart is drawn at its own size; when that is wider than the card it
+   scrolls here, inside its own box, and the page never moves sideways. It used
+   to be scaled to fit instead, which shrank sixty-six years of lettering to a
+   third of its size and made the axis unreadable. */
+.chart-scroll { overflow-x: auto; padding-bottom: var(--sp-2); }
+.chart { display: block; max-width: none; }
+
+/* The number, then everything that qualifies it underneath - so the figure is
+   read on its own and the warning beside it is not read as part of the label. */
+.chart-headline {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  gap: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-5);
+}
+.chart-headline__meta {
+  flex: 1 0 100%;
+  display: flex; flex-wrap: wrap; align-items: center; gap: var(--sp-3);
+  color: var(--text-muted);
+}
+
+/* Pointing at a column says which column. The wash sits behind the bar, never
+   over it, so no bar's colour - and so no bar's meaning - changes on hover.
+   The reduced-motion block above already turns the fade off. */
+.chart__band { opacity: 0; transition: opacity 0.12s; }
+.chart__bar:hover .chart__band,
+.chart__bar:focus-within .chart__band { opacity: 0.12; }
+
+.legend {
+  display: flex; flex-wrap: wrap; gap: var(--sp-2) var(--sp-3);
+  margin-top: var(--sp-5);
+}
+.legend__item {
+  display: inline-flex; align-items: center; gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-3) var(--sp-1) var(--sp-2);
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface);
+  font-size: var(--size-small);
+}
+.legend__swatch { flex: none; }
+
+.chart-table { margin-top: var(--sp-5); }
 
 /* Periods of the user's own life, shaded behind the timeline bars. */
 .era-list { list-style: none; margin: var(--sp-4) 0; padding: 0; }

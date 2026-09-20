@@ -68,37 +68,61 @@ async function draw() {
   // date, and append would print the word "null" where the panel would be.
   add(host,
     breadcrumb(data),
-    headline(data),
-    el('div', { class: 'card' }, chart(data)),
-    legend(data),
+    el('div', { class: 'card' },
+      headline(data),
+      chart(data, plotWidth(host)),
+      legend(data),
+      chartTable(data),
+    ),
     undatedPanel(data.undated),
     periodsPanel(data),
     exportPanel(),
   );
 }
 
+// The chart is drawn at its own size and scrolls sideways inside its own box
+// when it is wider than that. Asking the page how much room there is means a
+// chart with twelve bars fills the card instead of sitting in a corner of it.
+//
+// The room is measured before the chart is in the page, and putting it there
+// makes the page long enough to grow a scrollbar, which takes a little of that
+// room back. Without the allowance for it, a chart that fits perfectly well
+// ends up with a scrollbar of its own for the sake of fifteen pixels.
+function plotWidth(host) {
+  const CARD_INSET = 50;          // the card's padding either side, plus border
+  const SCROLLBAR = 18;           // the one the page is about to grow
+  const inner = (host.clientWidth || 0) - CARD_INSET - SCROLLBAR;
+  return inner > 480 ? inner : 900;
+}
+
 // --- the numbers above the chart -----------------------------------------
 
 function headline(data) {
   const t = data.total || {};
-  const row = el('div', { class: 'row mb-5' });
 
-  row.append(el('span', { class: 'stat__value' }, num(t.value)));
-  row.append(el('span', { class: 'stat__label' }, 'records with a date'));
+  // The number on its own line, and everything qualifying it on the next, so
+  // the figure is read first and the warning beside it is not read as part of
+  // the label.
+  const meta = el('div', { class: 'chart-headline__meta' });
+
+  if (data.span) {
+    meta.append(el('span', {},
+      `${data.span.first_year} to ${data.span.last_year}`));
+  }
 
   if (t.qualified) {
-    row.append(el('span', { class: 'qualified-note' },
+    meta.append(el('span', { class: 'qualified-note' },
       t.estimated_missing
         ? `about ${num(t.estimated_missing)} more could not be read`
         : (t.qualifiers || []).map((q) => q.text).join('; ')));
-    row.append(el('a', { class: 'health__link', href: '#/problems' }, 'Why?'));
+    meta.append(el('a', { class: 'health__link', href: '#/problems' }, 'Why?'));
   }
 
-  if (data.span) {
-    row.append(el('span', { class: 'muted' },
-      `· ${data.span.first_year} to ${data.span.last_year}`));
-  }
-  return row;
+  return el('div', { class: 'chart-headline' },
+    el('span', { class: 'stat__value stat__value--lead' }, num(t.value)),
+    el('span', { class: 'stat__label' }, 'records with a date'),
+    meta,
+  );
 }
 
 function breadcrumb(data) {
@@ -128,11 +152,11 @@ function breadcrumb(data) {
 
 // --- the chart ------------------------------------------------------------
 
-function chart(data) {
+function chart(data, available) {
   const buckets = data.buckets;
-  const width = Math.max(900, buckets.length * 46 + 120);
+  const width = Math.max(available, buckets.length * 46 + 120);
   const height = 420;
-  const pad = { top: 24, right: 24, bottom: 86, left: 76 };
+  const pad = { top: 30, right: 20, bottom: 54, left: 78 };
   const plotW = width - pad.left - pad.right;
   const plotH = height - pad.top - pad.bottom;
 
@@ -140,17 +164,31 @@ function chart(data) {
   const step = niceStep(max, 5);
   const axisTop = Math.ceil(max / step) * step;
   const slot = plotW / buckets.length;
-  const barW = Math.min(38, Math.max(8, slot * 0.68));
+  const barW = Math.min(56, Math.max(10, slot * 0.62));
 
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  svg.setAttribute('width', '100%');
+  // Drawn at its own size rather than squeezed into the column. Sixty-six
+  // years shrunk to fit a card took the lettering down with them: axis figures
+  // at a third of their size are not small, they are gone.
+  svg.setAttribute('width', String(width));
+  svg.setAttribute('height', String(height));
+  svg.setAttribute('class', 'chart');
   svg.setAttribute('role', 'img');
   svg.setAttribute('aria-label', describeChart(data));
-  svg.style.maxWidth = '100%';
-  svg.style.height = 'auto';
 
   svg.append(defs());
+
+  // The plot sits on a panel of its own, so the chart reads as one object
+  // rather than as marks floating on the page.
+  const panel = document.createElementNS(SVG_NS, 'rect');
+  panel.setAttribute('x', String(pad.left));
+  panel.setAttribute('y', String(pad.top));
+  panel.setAttribute('width', String(plotW));
+  panel.setAttribute('height', String(plotH));
+  panel.setAttribute('rx', '8');
+  panel.setAttribute('fill', 'var(--surface)');
+  svg.append(panel);
 
   // Eras shaded behind the bars.
   for (const band of eraBands(data, buckets, pad, plotW, plotH, slot)) svg.append(band);
@@ -161,28 +199,27 @@ function chart(data) {
   // The bars.
   buckets.forEach((bucket, i) => {
     const x = pad.left + i * slot + (slot - barW) / 2;
-    svg.append(bar(bucket, x, barW, pad, plotH, axisTop, data));
+    svg.append(bar(bucket, x, barW, pad, plotH, axisTop, data, i, slot));
   });
 
   // X axis labels, thinned so they never overlap.
-  const every = Math.ceil(buckets.length / Math.floor(plotW / 44));
+  const every = Math.ceil(buckets.length / Math.max(1, Math.floor(plotW / 52)));
   buckets.forEach((bucket, i) => {
     if (i % every !== 0 && i !== buckets.length - 1) return;
     const x = pad.left + i * slot + slot / 2;
-    svg.append(text(x, pad.top + plotH + 22, bucket.label, {
-      anchor: 'middle', size: 15, fill: 'var(--text-muted)',
+    svg.append(text(x, pad.top + plotH + 26, bucket.label, {
+      anchor: 'middle', size: 16, fill: 'var(--text-muted)',
     }));
   });
 
-  // Axis lines.
+  // The baseline, drawn last so nothing sits on top of it. There is no line up
+  // the left any more: the panel edge and the figures beside it are the axis.
   svg.append(line(pad.left, pad.top + plotH, pad.left + plotW, pad.top + plotH,
     'var(--border-strong)', 2));
-  svg.append(line(pad.left, pad.top, pad.left, pad.top + plotH,
-    'var(--border-strong)', 2));
 
-  const wrap = el('div', { class: 'svg-scroll' });
+  const wrap = el('div', { class: 'svg-scroll chart-scroll' });
   wrap.append(svg);
-  return el('div', {}, wrap, chartTable(data));
+  return wrap;
 }
 
 function defs() {
@@ -214,9 +251,21 @@ function defs() {
   return defs;
 }
 
-function bar(bucket, x, barW, pad, plotH, max, data) {
+function bar(bucket, x, barW, pad, plotH, max, data, index, slot) {
   const group = document.createElementNS(SVG_NS, 'g');
+  group.setAttribute('class', 'chart__bar');
   const baseY = pad.top + plotH;
+
+  // A quiet wash down the whole column on hover, drawn behind everything else
+  // in the group, so pointing at a bar says which bar without tinting it.
+  const band = document.createElementNS(SVG_NS, 'rect');
+  band.setAttribute('class', 'chart__band');
+  band.setAttribute('x', String(x + barW / 2 - slot / 2));
+  band.setAttribute('y', String(pad.top));
+  band.setAttribute('width', String(slot));
+  band.setAttribute('height', String(plotH));
+  band.setAttribute('fill', 'var(--accent)');
+  group.append(band);
 
   if (!bucket.has_data) {
     // No data. A hatched block the full height of the plot, so an empty period
@@ -226,26 +275,26 @@ function bar(bucket, x, barW, pad, plotH, max, data) {
     rect.setAttribute('y', String(pad.top));
     rect.setAttribute('width', String(barW));
     rect.setAttribute('height', String(plotH));
+    rect.setAttribute('rx', '5');
     rect.setAttribute('fill', 'url(#gap-hatch)');
     rect.setAttribute('stroke', 'var(--gap-ink)');
     rect.setAttribute('stroke-width', '1.5');
     rect.setAttribute('stroke-dasharray', '4 3');
     group.append(rect);
 
-    const label = text(x + barW / 2, pad.top + plotH / 2, 'no data', {
-      anchor: 'middle', size: 13, fill: 'var(--gap-ink)', weight: '700',
-    });
+    // "explained" used to be its own word across the top of the block, at
+    // twelve pixels and wider than the block it belonged to, so at year level
+    // it lay across its neighbours. It reads down the bar with the rest.
+    const label = text(x + barW / 2, pad.top + plotH / 2,
+      bucket.explained ? 'no data (explained)' : 'no data', {
+        anchor: 'middle', size: 14, fill: 'var(--gap-ink)', weight: '700',
+      });
     label.setAttribute('transform', `rotate(-90 ${x + barW / 2} ${pad.top + plotH / 2})`);
     group.append(label);
-
-    if (bucket.explained) {
-      const note = text(x + barW / 2, pad.top + 14, 'explained', {
-        anchor: 'middle', size: 12, fill: 'var(--text-muted)',
-      });
-      group.append(note);
-    }
   } else {
     // Stacked by kind, tallest-contributing kind at the bottom.
+    const fills = document.createElementNS(SVG_NS, 'g');
+    fills.setAttribute('class', 'chart__fill');
     let y = baseY;
     for (const kind of data.kinds) {
       const n = bucket.by_kind[kind] || 0;
@@ -257,9 +306,26 @@ function bar(bucket, x, barW, pad, plotH, max, data) {
       rect.setAttribute('width', String(barW));
       rect.setAttribute('height', String(Math.max(1, h)));
       rect.setAttribute('fill', `var(--kind-${kind})`);
-      group.append(rect);
+      fills.append(rect);
       y -= h;
     }
+
+    // Rounded at the top and only at the top. The shape that does the
+    // rounding runs on past the baseline, so its lower corners curve where
+    // there is nothing to curve, and no segment loses a pixel of its height
+    // to the decoration.
+    const clipId = `bar-top-${index}`;
+    const clipper = document.createElementNS(SVG_NS, 'clipPath');
+    clipper.setAttribute('id', clipId);
+    const shape = document.createElementNS(SVG_NS, 'rect');
+    shape.setAttribute('x', String(x));
+    shape.setAttribute('y', String(y));
+    shape.setAttribute('width', String(barW));
+    shape.setAttribute('height', String(baseY - y + 12));
+    shape.setAttribute('rx', String(Math.min(5, barW / 3, (baseY - y) / 2)));
+    clipper.append(shape);
+    fills.setAttribute('clip-path', `url(#${clipId})`);
+    group.append(clipper, fills);
 
     if (bucket.gap_class === 'partial' || bucket.gap_class === 'source_contradiction') {
       // Data, but not all of it. The bar is outlined in the gap ink so the
@@ -316,9 +382,15 @@ function yAxis(top, step, pad, plotW, plotH) {
   const out = [];
   for (let value = 0; value <= top; value += step) {
     const y = pad.top + plotH - (value / top) * plotH;
-    out.push(line(pad.left, y, pad.left + plotW, y, 'var(--border)', 1));
-    out.push(text(pad.left - 10, y + 5, num(value), {
-      anchor: 'end', size: 14, fill: 'var(--text-muted)',
+    // Nothing is drawn at zero: the baseline is already there, and a second
+    // line on top of it only thickens it.
+    if (value > 0) {
+      const grid = line(pad.left, y, pad.left + plotW, y, 'var(--border)', 1);
+      grid.setAttribute('stroke-dasharray', '2 6');
+      out.push(grid);
+    }
+    out.push(text(pad.left - 14, y + 5, num(value), {
+      anchor: 'end', size: 15, fill: 'var(--text-muted)',
     }));
   }
   return out;
@@ -347,11 +419,13 @@ function eraBands(data, buckets, pad, plotW, plotH, slot) {
     rect.setAttribute('width', String((to - from + 1) * slot));
     rect.setAttribute('height', String(plotH));
     rect.setAttribute('fill', era.color || 'var(--accent)');
-    rect.setAttribute('opacity', '0.1');
+    rect.setAttribute('opacity', '0.14');
+    rect.setAttribute('rx', '6');
     out.push(rect);
 
-    out.push(text(pad.left + from * slot + 6, pad.top + 16, era.name, {
-      anchor: 'start', size: 14, fill: 'var(--text-muted)', weight: '600',
+    // The name goes above the plot, where it has nothing to collide with.
+    out.push(text(pad.left + from * slot + 2, pad.top - 10, era.name, {
+      anchor: 'start', size: 15, fill: 'var(--text-muted)', weight: '600',
     }));
   }
   return out;
@@ -380,7 +454,7 @@ function chartTable(data) {
           b.explained ? 'No data (explained)' : 'No data')),
   ));
 
-  return el('details', { class: 'mb-3' },
+  return el('details', { class: 'chart-table' },
     el('summary', {}, 'The same figures as a table'),
     el('div', { class: 'table-wrap' },
       el('table', {},
@@ -399,28 +473,30 @@ function chartTable(data) {
 function legend(data) {
   const items = data.kinds
     .filter((k) => data.buckets.some((b) => b.by_kind[k]))
-    .map((kind) => el('span', { class: 'row row--tight' },
+    .map((kind) => el('span', { class: 'legend__item' },
       swatch(`var(--kind-${kind})`),
       el('span', {}, kindLabel(kind)),
     ));
 
-  items.push(el('span', { class: 'row row--tight' },
+  items.push(el('span', { class: 'legend__item' },
     swatch('url(#gap-hatch)', true),
     el('span', {}, 'No data — nothing was found for this period'),
   ));
 
-  return el('div', { class: 'row row--wide mb-5' }, ...items);
+  return el('div', { class: 'legend' }, ...items);
 }
 
 function swatch(fill, hatched = false) {
   const svg = document.createElementNS(SVG_NS, 'svg');
-  svg.setAttribute('width', '22');
-  svg.setAttribute('height', '22');
+  svg.setAttribute('width', '18');
+  svg.setAttribute('height', '18');
+  svg.setAttribute('class', 'legend__swatch');
   svg.setAttribute('aria-hidden', 'true');
   if (hatched) svg.append(defs());
   const rect = document.createElementNS(SVG_NS, 'rect');
-  rect.setAttribute('width', '22');
-  rect.setAttribute('height', '22');
+  rect.setAttribute('width', '18');
+  rect.setAttribute('height', '18');
+  rect.setAttribute('rx', '4');
   rect.setAttribute('fill', fill);
   if (hatched) {
     rect.setAttribute('stroke', 'var(--gap-ink)');

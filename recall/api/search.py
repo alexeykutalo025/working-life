@@ -188,6 +188,137 @@ def search(
 TABLE_MAX = 500
 
 
+def _card(path: str) -> str:
+    """One field out of a contact card, as SQL.
+
+    Guarded, because ``json_extract`` on a card that will not parse is an
+    error that would take the whole table down rather than leaving one cell
+    out of the sort.
+    """
+    return (
+        f"CASE WHEN json_valid(i.contact_json) "
+        f"THEN json_extract(i.contact_json, '{path}') END"
+    )
+
+
+#: The body columns show a preview with the leading blank lines taken off, so
+#: the sort has to take them off too, or a message that begins with an empty
+#: line sorts somewhere its cell on screen gives no reason for.
+_BODY_TEXT = (
+    "LTRIM(i.body_text, ' ' || char(9) || char(10) || char(13)) COLLATE NOCASE"
+)
+
+
+#: How to order the table by each column, as SQL over ``items i``.
+#:
+#: A column can be sorted when its cell holds one value the database also
+#: holds - a column of the row, or the same sub-select the row builder in
+#: ``export.rows`` already uses. A cell assembled in Python out of several
+#: values - everyone who was on a message, a sentence about what is uncertain
+#: about a record - is deliberately absent. Sorting those would mean writing a
+#: second version of that assembly in SQL, and the day the two disagreed the
+#: user would see a table that looks unsorted, which is worse than a heading
+#: that does not offer to sort at all.
+#:
+#: Text sorts case-insensitively: somebody clicking "Subject" wants an
+#: alphabet, not the ASCII order where every capital comes before every
+#: small letter.
+_SORT_SQL: dict[str, str] = {
+    # Straight off the item row.
+    "item_id": "i.id",
+    "date": "i.occurred_utc",
+    "first_seen": "i.occurred_utc",
+    "due_date": "i.end_utc",
+    "subject": "i.subject COLLATE NOCASE",
+    "location": "i.location COLLATE NOCASE",
+    "importance": "i.importance COLLATE NOCASE",
+    "message_id": "i.internet_message_id COLLATE NOCASE",
+    "meeting_status": "i.meeting_status COLLATE NOCASE",
+    "busy_status": "i.busy_status COLLATE NOCASE",
+    "timezone": "COALESCE(i.tz, 'unknown') COLLATE NOCASE",
+    # The yes/no columns. 0 before 1 is "no" before "yes", which is also what
+    # sorting the words on screen would give.
+    "has_attachments": "i.has_attachments",
+    "all_day": "i.all_day",
+    "recurring": "i.is_recurring_master",
+    "timezone_known": "i.tz IS NOT NULL",
+    # The clock columns, in the form the cell shows: an all-day event has no
+    # time in it, and sorts with the other blanks.
+    "time": "substr(i.occurred_utc, 12, 5)",
+    "start": "CASE WHEN i.all_day THEN NULL ELSE substr(i.occurred_utc, 12, 5) END",
+    "end": "CASE WHEN i.all_day THEN NULL ELSE substr(i.end_utc, 12, 5) END",
+    "duration_min": (
+        "CASE WHEN i.all_day THEN NULL "
+        "ELSE julianday(i.end_utc) - julianday(i.occurred_utc) END"
+    ),
+    "body": _BODY_TEXT,
+    "body_preview": _BODY_TEXT,
+    "notes": _BODY_TEXT,
+    # Looked up elsewhere, but by the same sub-select the row is built from.
+    "folder": "(SELECT f.path FROM folders f WHERE f.id = i.folder_id) COLLATE NOCASE",
+    "source_file": (
+        "(SELECT GROUP_CONCAT(sf.path, ' | ') FROM item_sources isrc "
+        "JOIN source_files sf ON sf.id = isrc.source_file_id "
+        "WHERE isrc.item_id = i.id) COLLATE NOCASE"
+    ),
+    "category": (
+        "(SELECT GROUP_CONCAT(t.name, '; ') FROM item_tags it "
+        "JOIN tags t ON t.id = it.tag_id WHERE it.item_id = i.id) COLLATE NOCASE"
+    ),
+    "attachment_names": (
+        "(SELECT GROUP_CONCAT(a.filename, '; ') FROM attachments a "
+        "WHERE a.item_id = i.id) COLLATE NOCASE"
+    ),
+    # One person, picked the same way the row builder picks them.
+    "attendee_count": (
+        "(SELECT COUNT(*) FROM participations p WHERE p.item_id = i.id "
+        "AND p.role IN ('attendee','optional','resource'))"
+    ),
+    "from_name": (
+        "(SELECT COALESCE(pe.display_name, ident.raw_display_name) "
+        "FROM participations p JOIN identities ident ON ident.id = p.identity_id "
+        "LEFT JOIN people pe ON pe.id = p.person_id "
+        "WHERE p.item_id = i.id AND p.role = 'from' "
+        "ORDER BY ident.address LIMIT 1) COLLATE NOCASE"
+    ),
+    "from_address": (
+        "(SELECT ident.address FROM participations p "
+        "JOIN identities ident ON ident.id = p.identity_id "
+        "WHERE p.item_id = i.id AND p.role = 'from' "
+        "ORDER BY ident.address LIMIT 1) COLLATE NOCASE"
+    ),
+    # A contact's own card.
+    "display_name": (
+        f"COALESCE(NULLIF({_card('$.display_name')}, ''), i.subject) COLLATE NOCASE"
+    ),
+    "given_name": f"{_card('$.given_name')} COLLATE NOCASE",
+    "surname": f"{_card('$.surname')} COLLATE NOCASE",
+    "organization": f"{_card('$.organization')} COLLATE NOCASE",
+    "title": f"{_card('$.title')} COLLATE NOCASE",
+    "phone_business": f"{_card('$.phones.business')} COLLATE NOCASE",
+    "phone_home": f"{_card('$.phones.home')} COLLATE NOCASE",
+    "phone_mobile": f"{_card('$.phones.mobile')} COLLATE NOCASE",
+}
+
+#: What the table is ordered by when nobody has chosen a column: oldest first,
+#: with the records that have no date at the end rather than pretending to a
+#: place in the run of years.
+_DEFAULT_ORDER = "i.occurred_utc IS NULL, i.occurred_utc, i.id"
+
+
+def _order_by(column: str | None, *, descending: bool) -> str:
+    """The ORDER BY for one page of the table.
+
+    An empty cell goes last whichever way the column runs - a screenful of
+    blanks is never what somebody clicking a heading was after - and ``i.id``
+    breaks every tie, so that two records holding the same value cannot swap
+    places between one page and the next and appear twice or not at all.
+    """
+    if column is None:
+        return _DEFAULT_ORDER
+    return f"{_SORT_SQL[column]} {'DESC' if descending else 'ASC'} NULLS LAST, i.id"
+
+
 @router.get("/search/table")
 def search_table(
     request: Request,
@@ -201,6 +332,8 @@ def search_table(
     undated: bool = False,
     date_from: str | None = None,
     date_to: str | None = None,
+    sort: str | None = None,
+    direction: str = "asc",
     limit: int = 200,
     offset: int = 0,
 ) -> dict[str, Any]:
@@ -213,6 +346,13 @@ def search_table(
 
     Each kind has its own columns, because a calendar entry and a contact share
     almost none, so one kind is returned at a time.
+
+    ``sort`` names a column to order by and ``direction`` is "asc" or "desc".
+    The ordering is applied to every matching record before the page is cut,
+    not to the page afterwards, so clicking a heading sorts the result set
+    rather than the fifty rows that happen to be on screen. A column that
+    cannot be sorted faithfully is ignored, and the response says which
+    column was actually used and which ones could be.
     """
     from ..db import IN_IDS, ids_param
     from ..export.selection import _ROWS_FOR_KIND, KIND_SHEET_NAMES, _matching_ids
@@ -267,21 +407,36 @@ def search_table(
     rows: list[dict[str, Any]] = []
     total_of_kind = counts.get(showing, 0)
 
+    sortable: list[str] = []
+    descending = str(direction).lower() == "desc"
+    sort_column: str | None = None
+
     if showing and showing in _ROWS_FOR_KIND:
         row_fn, columns = _ROWS_FOR_KIND[showing]
+        sortable = [c for c in columns if c in _SORT_SQL]
+        sort_column = sort if sort in sortable else None
+
         page_ids = [
             int(r["id"])
             for r in conn.execute(
-                f"SELECT id FROM items WHERE kind = ? AND id {IN_IDS} "
-                "ORDER BY occurred_utc IS NULL, occurred_utc, id LIMIT ? OFFSET ?",
+                f"SELECT i.id FROM items i WHERE i.kind = ? AND i.id {IN_IDS} "
+                f"ORDER BY {_order_by(sort_column, descending=descending)} "
+                "LIMIT ? OFFSET ?",
                 (showing, matched, limit, offset),
             )
         ]
         if page_ids:
             # One page, so this list is small by construction.
-            rows = list(row_fn(
-                conn, where=f"i.id IN ({_marks(page_ids)})", params=page_ids
-            ))
+            built = {
+                int(r["item_id"]): r
+                for r in row_fn(
+                    conn, where=f"i.id IN ({_marks(page_ids)})", params=page_ids
+                )
+            }
+            # Each row builder orders its own query, which is not the order
+            # the page was chosen in - and for contacts never was. The page
+            # order is the one the user asked for, so it is the one that wins.
+            rows = [built[i] for i in page_ids if i in built]
 
     qualifiers = qualifiers_for(
         conn,
@@ -300,6 +455,14 @@ def search_table(
         "rows": rows,
         "offset": offset,
         "limit": limit,
+        # What the table is *actually* ordered by, not what was asked for: a
+        # heading cannot be left drawing an arrow over a sort that was
+        # dropped because this kind has no such column.
+        "sort": {
+            "column": sort_column,
+            "direction": "desc" if descending else "asc",
+            "sortable": sortable,
+        },
         "total": {
             "value": total_of_kind,
             "qualified": bool(qualifiers),

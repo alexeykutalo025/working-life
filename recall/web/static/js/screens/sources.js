@@ -43,7 +43,7 @@ function reload() {
 export async function render({ params } = {}) {
   setTitle('Files found');
 
-  const root = el('div', {},
+  const root = el('div', { class: 'sources' },
     el('h1', { class: 'page__title' }, 'Files found on this computer'),
     el('p', { class: 'page__lede' },
       'Everything below was found by searching your drives. Nothing here has ' +
@@ -142,7 +142,7 @@ function renderControls() {
   clear(host);
 
   host.append(
-    el('div', { class: 'card mb-5' },
+    el('div', { class: 'card card--hero mb-5' },
       el('h2', { class: 'card__title mt-0' }, 'Everything, in one go'),
       el('button', {
         class: 'btn btn--primary btn--big btn--block',
@@ -174,14 +174,6 @@ function renderControls() {
           onclick: () => openReadDialog(null),
         }, 'Read them into the archive'),
       ),
-    ),
-
-    el('div', { class: 'btn-row mb-5' },
-      el('button', {
-        class: 'btn',
-        type: 'button',
-        onclick: async () => { await refreshSummary(); await reload(); },
-      }, 'Refresh this list'),
     ),
 
     el('div', { class: 'toolbar' },
@@ -225,6 +217,11 @@ function renderControls() {
         el('option', { value: 'external' }, 'On a removable drive'),
         el('option', { value: 'network' }, 'On the network'),
       )),
+      el('button', {
+        class: 'btn',
+        type: 'button',
+        onclick: async () => { await refreshSummary(); await reload(); },
+      }, 'Refresh this list'),
     ),
 
     el('div', { class: 'btn-row mb-5', id: 'selection-actions' }),
@@ -1036,7 +1033,7 @@ async function refreshTable() {
 
   add(host,
     el('div', { class: 'table-wrap' },
-      el('table', {},
+      el('table', { class: 'table--files' },
         el('thead', {},
           el('tr', {},
             el('th', { class: 'col-check' }, selectAll),
@@ -1130,11 +1127,11 @@ function rowView(r) {
             `about ${num(r.estimated_loss)} records could not be read from this file`)
         : null,
     ),
-    el('td', {}, el('span', { class: 'nowrap' }, r.ext), el('div', { class: 'cell-path' }, typeName(r.ext))),
+    el('td', {}, el('span', { class: 'nowrap' }, r.ext), el('div', { class: 'cell-note' }, typeName(r.ext))),
     el('td', { class: 'num nowrap' }, bytes(r.size_bytes)),
     el('td', { class: 'nowrap' }, date(r.mtime_utc)),
-    el('td', {}, el('div', { class: 'row' }, ...conditions),
-      el('div', { class: 'cell-path' }, r.comparison_state)),
+    el('td', {}, el('div', { class: 'row row--tight' }, ...conditions),
+      el('div', { class: 'cell-note' }, r.comparison_state)),
     el('td', { class: 'num' }, r.parse_state === 'done' ? num(r.item_count) : '—'),
   );
 }
@@ -1145,6 +1142,7 @@ function renderSelectionActions() {
   clear(host);
 
   const n = state.selected.size;
+  host.classList.toggle('selection-bar', n > 0);
   if (!n) {
     host.append(el('p', { class: 'muted mb-0' },
       'Tick files above to work on just those. The button at the top does ' +

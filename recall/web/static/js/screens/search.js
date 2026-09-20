@@ -83,6 +83,13 @@ const state = {
   view: storedView(),
   //: Which kind's table is showing, when the results hold more than one.
   table_kind: '',
+  //: Which column the table is ordered by, and which way. Not the same thing
+  //: as `sort` above: that puts the readable list in order of relevance or of
+  //: date, and this puts the table in order of one of its own columns. The
+  //: server does the ordering, over every record that matched rather than
+  //: over the page, and says back which column it used - see drawTable.
+  sort_column: '',
+  sort_direction: 'asc',
   //: Columns the user turned off, keyed by kind. See HIDDEN_BY_DEFAULT.
   hidden: storedObject(HIDDEN_KEY),
   //: Column widths in pixels, keyed by kind, where one has been dragged.
@@ -195,9 +202,9 @@ export async function render({ params }) {
   state.offset = 0;
   state.selected = -1;
 
-  const root = el('div', {},
+  const root = el('div', { class: 'search' },
     el('h1', { class: 'page__title' }, 'Search'),
-    el('div', { class: 'card' },
+    el('div', { class: 'card search__hero' },
       el('label', { for: 'search-box' },
         'Search everything in the archive'),
       el('input', {
@@ -222,7 +229,8 @@ export async function render({ params }) {
       el('div', { id: 'search-understood' }),
     ),
     el('div', { class: 'with-sidebar' },
-      el('aside', { id: 'search-filters' }, loading('Loading filters')),
+      el('aside', { id: 'search-filters', class: 'search__side' },
+        loading('Loading filters')),
       el('div', { id: 'search-results' }),
     ),
   );
@@ -264,13 +272,26 @@ function installKeys() {
     } else if (e.key === 'ArrowUp' && (!typing || document.activeElement === box)) {
       e.preventDefault();
       move(-1);
-    } else if (e.key === 'Enter' && state.selected >= 0 && document.activeElement !== box) {
+    } else if (e.key === 'Enter' && state.selected >= 0 && !onControl()) {
       e.preventDefault();
       const result = state.results[state.selected];
       if (result) window.location.hash = `#/item/${result.id}`;
     }
   };
   document.addEventListener('keydown', keyHandler);
+}
+
+/**
+ * Is focus on something that has its own answer to Enter?
+ *
+ * The search box, a column heading that sorts, a link. Enter belongs to that
+ * thing, not to whichever result the arrow keys last moved to - pressing it
+ * on a heading has to sort the column, not open a record somewhere below.
+ */
+function onControl() {
+  const node = document.activeElement;
+  return !!node
+    && ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON', 'A'].includes(node.tagName);
 }
 
 function move(delta) {
@@ -605,7 +626,7 @@ async function runSearch() {
 
   // The honest-count rule: a total that something affects is never bare.
   const total = data.total;
-  const header = el('div', { class: 'row mb-3' },
+  const header = el('div', { class: 'row search__count' },
     el('span', { class: 'stat__value stat__value--inline' }, num(total.value)),
     el('span', { class: 'stat__label' },
       total.value === 1 ? 'record found' : 'records found'),
@@ -614,8 +635,9 @@ async function runSearch() {
   if (total.qualified) {
     const notes = (total.qualifiers || []).map((q) => q.text);
     if (total.index_note) notes.push(total.index_note);
-    header.append(el('span', { class: 'qualified-note' }, notes.join(' · ')));
-    header.append(el('a', { class: 'health__link', href: '#/problems' }, 'Why?'));
+    header.append(el('div', { class: 'search__caveat' },
+      el('span', { class: 'qualified-note' }, notes.join(' · ')),
+      el('a', { class: 'health__link', href: '#/problems' }, 'Why?')));
   }
   host.append(header);
   // chipRow is null when nothing is narrowing the results, which is most of
@@ -738,7 +760,7 @@ function viewSwitch() {
     },
   }, label);
 
-  return el('div', { class: 'row mb-3' },
+  return el('div', { class: 'row search__views' },
     el('span', { class: 'muted' }, 'Show as'),
     el('div', { class: 'btn-row' },
       button('table', 'Table', 'Every column, as it appears in the spreadsheet'),
@@ -760,6 +782,8 @@ async function drawTable(host) {
       undated: state.undated ? '1' : '',
       date_from: state.date_from,
       date_to: state.date_to,
+      sort: state.sort_column,
+      direction: state.sort_direction,
       limit: state.pageSize,
       offset: state.offset,
     });
@@ -768,7 +792,26 @@ async function drawTable(host) {
     host.append(errorNotice(err));
     return;
   }
+  // Take back the column the server actually sorted by. It drops one this
+  // kind has no such column for - switching from the mail to the calendar
+  // with "From" sorted - and a heading left drawing an arrow over an order
+  // that was never applied is a lie about what is on the screen.
+  state.sort_column = (tableData.sort && tableData.sort.column) || '';
   renderTable(host);
+}
+
+/** Order the table by one column, and go back to its first page. */
+function sortBy(column, direction) {
+  state.sort_column = column;
+  state.sort_direction = direction;
+  state.offset = 0;
+  state.selected = -1;
+
+  const host = document.getElementById('search-table');
+  if (!host) return;
+  clear(host);
+  host.append(loading('Putting them in order'));
+  drawTable(host);
 }
 
 /**
@@ -793,7 +836,7 @@ function renderTable(host) {
   // More than one kind of record needs more than one table: a calendar entry
   // and a contact share almost no columns.
   if (data.kinds.length > 1) {
-    const row = el('div', { class: 'row mb-3' },
+    const row = el('div', { class: 'row search__kinds' },
       el('span', { class: 'muted' }, 'Which records'));
     for (const k of data.kinds) {
       row.append(el('button', {
@@ -824,8 +867,12 @@ function renderTable(host) {
 
   const head = el('tr', {});
   for (const column of shown) {
-    const th = el('th', {}, data.headings[column] || column);
+    const th = el('th', {}, sortHeading(data, column));
     th.style.width = `${columnWidth(kind, column, data.widths[column])}px`;
+    if (sortedBy(data) === column) {
+      th.setAttribute('aria-sort',
+        data.sort.direction === 'desc' ? 'descending' : 'ascending');
+    }
     th.append(widthGrip(th, kind, column, data));
     head.append(th);
   }
@@ -857,9 +904,65 @@ function renderTable(host) {
     el('div', { class: 'table-wrap' },
       el('table', { class: 'table--columns' }, el('thead', {}, head), body)),
     el('p', { class: 'muted mt-3' },
-      'These are the same columns you get in the spreadsheet. Click a row to ' +
-      'open the record, or drag the edge of a heading to change its width.'),
+      'These are the same columns you get in the spreadsheet. Click a heading ' +
+      'to put every matching record in order of that column, and again to ' +
+      'turn the order round. Click a row to open the record, or drag the edge ' +
+      'of a heading to change its width.'),
     resultsPager(data.total.value),
+  );
+}
+
+// --- ordering by a column -------------------------------------------------
+
+/** The column the server says the table is in order of, or none. */
+function sortedBy(data) {
+  return (data.sort && data.sort.column) || null;
+}
+
+/**
+ * A column heading, which sorts the table if that column can be sorted.
+ *
+ * A button rather than a clickable cell, so it answers the keyboard without
+ * anything here having to reimplement what Enter and the space bar do - and
+ * so a screen reader announces it as something that can be pressed.
+ *
+ * Not every column can be sorted. A cell the server assembles out of several
+ * values - everyone who was on a message, the note saying what is uncertain
+ * about a record - has nothing single to put in order, and the server says
+ * which those are rather than this guessing. They stay plain text, with the
+ * reason on hover, because a heading that looks clickable and does nothing is
+ * worse than one that never offered.
+ */
+function sortHeading(data, column) {
+  const heading = data.headings[column] || column;
+  const sortable = ((data.sort && data.sort.sortable) || []).includes(column);
+
+  if (!sortable) {
+    return el('span', {
+      class: 'col-plain',
+      title: `Recall puts "${heading}" together out of several things for `
+        + 'each record, so the table cannot be put in order of it.',
+    }, heading);
+  }
+
+  const on = sortedBy(data) === column;
+  const descending = on && data.sort.direction === 'desc';
+  const next = on && !descending ? 'desc' : 'asc';
+
+  return el('button', {
+    type: 'button',
+    class: `col-sort${on ? ' is-sorted' : ''}`,
+    title: next === 'desc'
+      ? `Put them in order of ${heading}, largest or latest first`
+      : `Put them in order of ${heading}, smallest or earliest first`,
+    onclick: (e) => { e.stopPropagation(); sortBy(column, next); },
+  },
+    el('span', { class: 'col-sort__name' }, heading),
+    // Always in the layout, so clicking a heading does not shove every other
+    // heading sideways. Hidden from a screen reader, which is told the same
+    // thing properly by aria-sort on the cell.
+    el('span', { class: 'col-sort__arrow', 'aria-hidden': 'true' },
+      on ? (descending ? '▼' : '▲') : '↕'),
   );
 }
 
@@ -1126,7 +1229,7 @@ function exportBar(total) {
     status,
   );
 
-  return el('div', {}, downloadRow, more);
+  return el('div', { class: 'search__export' }, downloadRow, more);
 }
 
 /** The current filters, in the shape both export routes expect. */
