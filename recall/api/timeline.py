@@ -10,6 +10,10 @@ gap arrives as a row with ``has_data: false`` and a reason.
 from __future__ import annotations
 
 import calendar as _calendar
+import secrets
+import threading
+import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -601,8 +605,13 @@ def download_search_results(
     undated: bool = False,
     date_from: str | None = None,
     date_to: str | None = None,
+    token: str | None = None,
 ) -> FileResponse:
     """The same export, handed straight to the browser.
+
+    With a ``token`` the file was built while the browser watched it being
+    built, and this hands over what is already there. Without one it is built
+    here and now, which is what a plain link does.
 
     A GET, because that is what an ordinary download link is, and a link is
     what somebody expects to click. The file is still written into the exports
@@ -614,6 +623,9 @@ def download_search_results(
     """
     from ..export import ExportError
     from ..export.selection import export_search
+
+    if token:
+        return _serve_prepared(token)
 
     try:
         result = export_search(
@@ -634,6 +646,15 @@ def download_search_results(
     if not path.exists():  # pragma: no cover - the writer would have raised
         raise HTTPException(status_code=500, detail="The file was not written.")
 
+    return _file_response(
+        path,
+        records=result["total_records"],
+        is_complete=all(f["is_complete"] for f in result["files"]),
+    )
+
+
+def _file_response(path: Path, *, records: int, is_complete: bool) -> FileResponse:
+    """The one way a file leaves here, however it came to be built."""
     return FileResponse(
         path,
         filename=path.name,
@@ -643,10 +664,8 @@ def download_search_results(
             "Content-Disposition": f'attachment; filename="{path.name}"',
             # What is missing from the file, for anyone reading the response
             # rather than opening the workbook. The Integrity sheet is inside.
-            "X-Recall-Records": str(result["total_records"]),
-            "X-Recall-Complete": "yes" if all(
-                f["is_complete"] for f in result["files"]
-            ) else "no",
+            "X-Recall-Records": str(records),
+            "X-Recall-Complete": "yes" if is_complete else "no",
         },
     )
 
@@ -657,3 +676,235 @@ _MEDIA_TYPES = {
     ".json": "application/json",
     ".md": "text/markdown",
 }
+
+
+# ---------------------------------------------------------------------------
+# Downloads the browser can watch
+# ---------------------------------------------------------------------------
+#
+# Building a workbook is not quick. A result set of any size is minutes of
+# reading records out of the archive and writing them into sheets before the
+# first byte could reach the browser, and a link shows nothing at all while
+# that happens - which looks exactly like a link that does not work. One
+# client waited, decided it had failed, and pressed it four more times.
+#
+# So the page asks for the file to be built, watches it being built, and saves
+# it when it is there. The progress is the same shape a job reports, and is
+# drawn by the same bar.
+
+#: A finished file stays claimable for an hour. The workbook itself stays in
+#: the exports folder whatever happens to this - the token is only the string
+#: the browser comes back with.
+_DOWNLOAD_TTL_SEC = 3600
+
+#: "Not given", so that ``total=None`` keeps its own meaning: not knowable.
+_UNSET = object()
+
+
+@dataclass
+class _PreparedDownload:
+    """One file being built for the browser, and how far along it is."""
+
+    token: str
+    state: str = "running"          # running | ready | failed
+    message: str = "Getting ready..."
+    current: str = ""
+    done: int = 0
+    total: int | None = None        # None = not knowable yet
+    path: Path | None = None
+    records: int = 0
+    is_complete: bool = True
+    error: str | None = None
+    started: float = field(default_factory=time.monotonic)
+    #: When the step in hand started. See rate_per_sec.
+    step_started: float = field(default_factory=time.monotonic)
+    finished: float | None = None
+
+    @property
+    def elapsed_sec(self) -> float:
+        end = time.monotonic() if self.finished is None else self.finished
+        return max(0.0, end - self.started)
+
+    @property
+    def rate_per_sec(self) -> float | None:
+        """How fast the step in hand is going - that step, not the whole build.
+
+        Timed from the start of the step for the reason JobManager.begin_phase
+        gives: a count divided by the minutes spent on the step before it is a
+        rate near zero, and a time remaining measured in days.
+        """
+        end = time.monotonic() if self.finished is None else self.finished
+        elapsed = max(0.0, end - self.step_started)
+        if elapsed < 0.5 or not self.done:
+            return None
+        return self.done / elapsed
+
+    @property
+    def remaining_sec(self) -> float | None:
+        """None means "cannot be estimated" - and the screen says exactly that."""
+        rate = self.rate_per_sec
+        if self.total is None or not rate or self.done >= self.total:
+            return None
+        return (self.total - self.done) / rate
+
+    def progress(self, *, done=None, total=_UNSET, message=None, current=None) -> None:
+        """What the exporter calls. Anything left out stays as it was."""
+        if done is not None:
+            self.done = done
+        if total is not _UNSET:
+            self.total = total
+        if message is not None:
+            if message != self.message:
+                # A new step: collecting, writing, saving. Each counts from
+                # nothing, the same way a job's phases do.
+                self.step_started = time.monotonic()
+            self.message = message
+        if current is not None:
+            self.current = current
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "token": self.token,
+            "state": self.state,
+            "message": self.message,
+            "current": self.current,
+            "done": self.done,
+            "total": self.total,
+            # The field names a job reports, because one bar draws both and two
+            # shapes would be two bars to keep honest.
+            "unit": "records",
+            "rate_per_sec": round(self.rate_per_sec, 1) if self.rate_per_sec else None,
+            "elapsed_sec": round(self.elapsed_sec, 1),
+            "remaining_sec": (
+                round(self.remaining_sec) if self.remaining_sec is not None else None
+            ),
+            "error": self.error,
+            "records": self.records,
+            "is_complete": self.is_complete,
+            "file": str(self.path) if self.path else None,
+        }
+
+
+_DOWNLOADS: dict[str, _PreparedDownload] = {}
+_DOWNLOADS_LOCK = threading.Lock()
+
+
+@router.post("/export/search/prepare")
+def prepare_search_download(request: Request, body: SearchExportRequest) -> dict[str, Any]:
+    """Start building the file, and hand back something to watch it with.
+
+    One at a time, deliberately: two builds would write the same file in the
+    exports folder, and "which of these two bars is mine" is not a question
+    anybody should have to answer.
+
+    ``out_path`` and ``copy_attachments`` are ignored here. This is the button
+    that hands somebody a file; saving into a folder is the other one.
+    """
+    settings = _settings(request)
+    # One connection per thread, so the builder below gets its own.
+    db = request.app.state.db
+
+    with _DOWNLOADS_LOCK:
+        _forget_old_downloads()
+        if any(d.state == "running" for d in _DOWNLOADS.values()):
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "A file is already being prepared. Wait for that one to "
+                    "finish, then ask for this one."
+                ),
+            )
+        download = _PreparedDownload(token=secrets.token_urlsafe(9))
+        _DOWNLOADS[download.token] = download
+
+    def build() -> None:
+        from ..export import ExportError
+        from ..export.selection import export_search
+
+        try:
+            result = export_search(
+                db(), settings,
+                fmt=body.format, query=body.q, kind=body.kind,
+                person_id=body.person_id, source_id=body.source_id,
+                folder_id=body.folder_id, tag=body.tag,
+                has_attachments=body.has_attachments, undated=body.undated,
+                date_from=body.date_from, date_to=body.date_to,
+                on_progress=download.progress,
+            )
+        except (ExportError, OSError) as exc:
+            download.state = "failed"
+            download.error = str(exc)
+            download.message = str(exc)
+        except Exception as exc:  # noqa: BLE001 - reported, never swallowed
+            download.state = "failed"
+            download.error = f"{exc.__class__.__name__}: {exc}"
+            download.message = (
+                "The file could not be built. Nothing already saved was lost; "
+                "the exact message is below."
+            )
+            log.exception("preparing a download failed")
+        else:
+            download.path = Path(result["files"][0]["file"])
+            download.records = int(result["total_records"])
+            download.is_complete = all(f["is_complete"] for f in result["files"])
+            download.done = download.total = download.records
+            download.current = ""
+            download.state = "ready"
+            download.message = _export_message(result)
+        finally:
+            download.finished = time.monotonic()
+
+    threading.Thread(target=build, daemon=True, name="export-download").start()
+    return download.as_dict()
+
+
+@router.get("/export/search/progress")
+def search_download_progress(token: str) -> dict[str, Any]:
+    """How far along the file is. The page asks about once a second."""
+    with _DOWNLOADS_LOCK:
+        download = _DOWNLOADS.get(token)
+    if download is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "That file is no longer being kept track of. Ask for it again "
+                "- anything already written is still in the exports folder."
+            ),
+        )
+    return download.as_dict()
+
+
+def _serve_prepared(token: str) -> FileResponse:
+    """Hand over a file that was built while the browser watched."""
+    with _DOWNLOADS_LOCK:
+        download = _DOWNLOADS.get(token)
+
+    if download is None or download.state != "ready" or download.path is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "That file is not ready to be handed over. Ask for it again "
+                "- anything already written is still in the exports folder."
+            ),
+        )
+    if not download.path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"The file was written to {download.path} and is no longer "
+                "there. Ask for it again."
+            ),
+        )
+
+    return _file_response(
+        download.path, records=download.records, is_complete=download.is_complete
+    )
+
+
+def _forget_old_downloads() -> None:
+    """Drop the tokens nobody came back for. Called with the lock held."""
+    now = time.monotonic()
+    for token, download in list(_DOWNLOADS.items()):
+        if download.finished is not None and now - download.finished > _DOWNLOAD_TTL_SEC:
+            del _DOWNLOADS[token]
+

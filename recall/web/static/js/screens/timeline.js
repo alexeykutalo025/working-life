@@ -12,6 +12,7 @@
 // deliberate: you cannot accidentally connect across a gap with a <rect>.
 
 import { api } from '../api.js';
+import { downloadWithProgress } from '../download.js';
 import {
   add, clear, el, empty, errorNotice, kindLabel, loading, modal, monthName,
   mount, num, plural, setTitle,
@@ -706,13 +707,16 @@ function exportPanel() {
       'Inside it Recall writes a plain-language note saying exactly what ' +
       'is missing or uncertain in the file — that note is not optional.'),
     el('div', { class: 'btn-row' },
-      // A download, the same as on the Search screen. One behaviour across the
+      // A download, the same as on the Search screen - the same button, the
+      // same bar while the workbook is built. One behaviour across the
       // application: a non-technical user should not have to learn that one
       // screen hands them a file and another leaves it in a folder to find.
-      el('a', {
+      el('button', {
         class: 'btn btn--primary',
-        href: api.exportDownloadUrl({ format: 'xlsx', kind: 'event' }),
-        download: '',
+        type: 'button',
+        onclick: (e) => downloadWithProgress(
+          e.target, { format: 'xlsx', kind: 'event' }, status,
+        ),
       }, 'Download the calendar as Excel'),
       el('a', {
         class: 'btn',

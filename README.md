@@ -467,7 +467,7 @@ guessing at.
 
 **Read properly and completely:**
 `.pst`, `.ost`, `.msg`, `.eml`, `.mbox`, `.ics`, `.vcs`, `.vcf`, `.olm`,
-`.dbx`, `.mbx`.
+`.mbx`.
 
 **Best-effort, and it tells you so on the record:**
 
@@ -483,6 +483,15 @@ guessing at.
   the file is and what to do about it, rather than half-reading it into
   plausible-looking rubbish. The contacts were almost certainly copied into
   Outlook's own Contacts when the format was retired, so look in a `.pst`.
+- **`.dbx`** (Outlook Express 5/6) — **found and listed, not read.** Recall had
+  a reader for this format and it was withdrawn. The format is undocumented,
+  the reader's model of it was wrong, and it was dropping messages and then
+  reporting the loss as damage to your file — so it blamed irreplaceable mail
+  for its own defect. A reader that quietly misreads your mail is worse than no
+  reader. Recall still finds these files, records them, and says what they are.
+  To recover the messages, import the file into Outlook Express or Windows Mail
+  on an older machine and export to Outlook, which produces a `.pst` that
+  Recall reads properly.
 - **Reading text out of scanned images** (OCR) — off by default. It needs
   Tesseract installed separately and is slow.
 - **Repeating calendar entries from `.pst`/`.ost`** — Outlook stores the repeat

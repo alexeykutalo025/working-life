@@ -6,7 +6,10 @@ stdlib deliberately leaves alone:
 
 * **Header decoding that does not give up.** ``=?iso-8859-1?Q?...?=`` is
   handled by the stdlib; a header that is raw cp1252 bytes with no encoding
-  marker at all is not, and that is what a 1997 mailer wrote.
+  marker at all is not, and that is what a 1997 mailer wrote. Those have to be
+  decoded from the message's own bytes: by the time the stdlib hands a header
+  over it has already replaced the undecodable bytes with U+FFFD, and that
+  cannot be undone. ``build_message`` takes ``raw_bytes`` for this reason.
 * **Dates that are not quite dates.** ``Date: Tue, 3 Nov 97 14:22:00 +0000``
   has a two-digit year. ``parsedate_to_datetime`` raises on several real
   forms, and a message with an unparseable date keeps the raw string and goes
@@ -91,7 +94,7 @@ class EmlParser(Parser):
                 )
                 return
 
-        item = build_message(message, backend=self.name)
+        item = build_message(message, backend=self.name, raw_bytes=raw)
         self.outcome.yielded_count = 1
         self.outcome.items_scanned = 1
         yield item
@@ -173,7 +176,16 @@ class MboxParser(Parser):
                     continue
 
                 try:
-                    item = build_message(message, backend=self.name)
+                    # The mailbox's own bytes, not message.as_bytes() - the
+                    # latter re-serialises what the stdlib already decoded, so
+                    # an undeclared 8-bit header would come back as U+FFFD.
+                    try:
+                        raw_bytes = box.get_bytes(key)
+                    except Exception:  # noqa: BLE001 - fall back to no bytes
+                        raw_bytes = None
+                    item = build_message(
+                        message, backend=self.name, raw_bytes=raw_bytes
+                    )
                 except Exception as exc:  # noqa: BLE001 - one message, not the file
                     # Recorded, not merely logged. This used to be a debug line
                     # and a continue, so the record left the archive without
@@ -211,14 +223,34 @@ class MboxParser(Parser):
 
 
 def build_message(
-    message: Message, *, backend: str = "eml", folder_path: str | None = None
+    message: Message,
+    *,
+    backend: str = "eml",
+    folder_path: str | None = None,
+    raw_bytes: bytes | None = None,
 ) -> ParsedItem:
-    """One RFC 5322 message to a ParsedItem. Never raises on bad input."""
+    """One RFC 5322 message to a ParsedItem. Never raises on bad input.
+
+    ``raw_bytes`` is the message exactly as it sits on disk, when the caller
+    has it. It is the only way to recover a header written as raw 8-bit bytes
+    with no charset declared: see ``decode_header_value``. Callers working from
+    a store that has no byte-level source - MAPI, for one - leave it out, and
+    everything else behaves as before.
+    """
     item = ParsedItem(kind=Kind.MESSAGE, backend=backend, folder_path=folder_path)
 
     confidence = 1.0
+    source_headers = raw_header_values(raw_bytes) if raw_bytes else {}
 
-    subject, subject_confidence = decode_header_value(message.get("Subject"))
+    def source(name: str, index: int = 0) -> bytes | None:
+        values = source_headers.get(name)
+        if values and index < len(values):
+            return values[index]
+        return None
+
+    subject, subject_confidence = decode_header_value(
+        message.get("Subject"), source("subject")
+    )
     item.subject = subject
     confidence = min(confidence, subject_confidence)
 
@@ -233,8 +265,13 @@ def build_message(
     item.raw_headers = _raw_headers(message)
 
     for header, role in _ROLE_FOR_HEADER.items():
-        for identity in _identities(message, header, role):
-            item.participants.append(identity)
+        identities, identity_confidence = _identities(
+            message, header, role, source_headers.get(header)
+        )
+        item.participants.extend(identities)
+        # A display name decoded from guessed bytes is exactly as uncertain as
+        # a subject decoded the same way, and used to be silently discarded.
+        confidence = min(confidence, identity_confidence)
 
     body_text, body_html, body_confidence = _bodies(message)
     item.body_html = body_html
@@ -260,11 +297,57 @@ def build_message(
     return item
 
 
-def decode_header_value(raw) -> tuple[str | None, float]:
+def raw_header_values(raw: bytes) -> dict[str, list[bytes]]:
+    """Every header's bytes, exactly as written, before anything decodes them.
+
+    Needed because the stdlib decodes a header on the way out and there is no
+    way back: a header written as raw 8-bit bytes with no charset declared
+    arrives with those bytes already replaced by U+FFFD. Reading the source
+    bytes separately is the only way to see what was actually written.
+
+    Names are lowercased; values keep their bytes and are unfolded onto one
+    line. A name repeated across the message keeps every value, in order, so a
+    caller can line them up with ``Message.get_all``.
+    """
+    block = raw
+    for terminator in (b"\r\n\r\n", b"\n\n"):
+        index = raw.find(terminator)
+        if index != -1:
+            block = raw[:index]
+            break
+
+    lines: list[bytes] = []
+    for line in block.split(b"\n"):
+        line = line.rstrip(b"\r")
+        if line[:1] in (b" ", b"\t") and lines:
+            lines[-1] += b" " + line.strip()
+        else:
+            lines.append(line)
+
+    out: dict[str, list[bytes]] = {}
+    for line in lines:
+        name, separator, value = line.partition(b":")
+        if not separator or not name.strip():
+            continue
+        try:
+            key = name.strip().decode("ascii").lower()
+        except UnicodeDecodeError:
+            continue
+        out.setdefault(key, []).append(value.strip())
+    return out
+
+
+def decode_header_value(raw, raw_fallback: bytes | None = None) -> tuple[str | None, float]:
     """A header to text, with how sure we are of it.
 
     Handles RFC 2047 words, and the far more common case of a header that is
     just raw 8-bit bytes with nothing declared at all.
+
+    ``raw_fallback`` is that header's bytes as the message actually stores
+    them, from ``raw_header_values``. The stdlib replaces undecodable header
+    bytes with U+FFFD before this function ever sees them, so for a 1997 mailer
+    writing bare cp1252 the decoded string has already lost the characters. The
+    bytes are the only remaining copy.
     """
     if raw is None:
         return None, 1.0
@@ -274,6 +357,17 @@ def decode_header_value(raw) -> tuple[str | None, float]:
         return decoded.text.strip() or None, decoded.confidence
 
     text = str(raw)
+
+    if "\ufffd" in text and raw_fallback:
+        decoded = clean_text(raw_fallback)
+        if "\ufffd" not in decoded.text:
+            if "=?" in decoded.text:
+                # Bare 8-bit and encoded words in the same header. Rare, but
+                # the encoded words still have to be unwrapped.
+                nested, nested_confidence = decode_header_value(decoded.text)
+                return nested, min(decoded.confidence, nested_confidence)
+            return decoded.text.strip() or None, decoded.confidence
+
     if "=?" not in text:
         # No encoded words. If it is pure ASCII it is certain; if it contains
         # high characters the stdlib already decoded it as something.
@@ -407,18 +501,34 @@ def _importance(message: Message) -> str | None:
     return None
 
 
-def _identities(message: Message, header: str, role: str) -> list[ParsedIdentity]:
-    """Every address on one header, with its display name."""
+def _identities(
+    message: Message,
+    header: str,
+    role: str,
+    raw_values: list[bytes] | None = None,
+) -> tuple[list[ParsedIdentity], float]:
+    """Every address on one header, with its display name and our confidence.
+
+    ``raw_values`` is this header's source bytes, positionally matched to
+    ``get_all``. A display name written in bare cp1252 is recovered from them.
+    """
     values = message.get_all(header)
     if not values:
-        return []
+        return [], 1.0
 
     out: list[ParsedIdentity] = []
     seen: set[str] = set()
+    confidence = 1.0
 
     decoded_values = []
-    for value in values:
-        text, _ = decode_header_value(value)
+    for index, value in enumerate(values):
+        fallback = (
+            raw_values[index]
+            if raw_values is not None and index < len(raw_values)
+            else None
+        )
+        text, value_confidence = decode_header_value(value, fallback)
+        confidence = min(confidence, value_confidence)
         if text:
             decoded_values.append(text)
 
@@ -440,7 +550,41 @@ def _identities(message: Message, header: str, role: str) -> list[ParsedIdentity
                 role=role,
             )
         )
-    return out
+    return out, confidence
+
+
+def _own_parts(message: Message) -> Iterator[Message]:
+    """This message's own parts, not descending into an attached email.
+
+    ``Message.walk`` walks straight through a ``message/rfc822`` part and
+    yields the attached message's parts as though they belonged here. They do
+    not. A forwarded mail whose attachment came first in the MIME order then
+    had its own covering note replaced by the forwarded message's body, filed
+    under the forwarding sender's name and date - one person's words attributed
+    to another, silently, with full confidence. Which body won depended on the
+    order the sending mailer happened to write the parts in.
+
+    An attached email is an attachment. It is yielded whole, and recorded as
+    one by ``_attachments``.
+    """
+    if not message.is_multipart():
+        yield message
+        return
+
+    payload = message.get_payload()
+    if not isinstance(payload, list):
+        yield message
+        return
+
+    for part in payload:
+        if not isinstance(part, Message):
+            continue
+        if _content_type(part) == "message/rfc822":
+            yield part
+        elif part.is_multipart():
+            yield from _own_parts(part)
+        else:
+            yield part
 
 
 def _bodies(message: Message) -> tuple[str | None, str | None, float]:
@@ -461,10 +605,12 @@ def _bodies(message: Message) -> tuple[str | None, str | None, float]:
             return None, text, confidence
         return text, None, confidence
 
-    for part in message.walk():
+    for part in _own_parts(message):
+        content_type = _content_type(part)
+        if content_type == "message/rfc822":
+            continue        # an attached email, not this message's body
         if part.is_multipart():
             continue
-        content_type = _content_type(part)
         disposition = str(part.get("Content-Disposition") or "").lower()
         if "attachment" in disposition:
             continue
@@ -513,7 +659,10 @@ def _attachments(message: Message) -> list[ParsedAttachment]:
         return []
 
     out: list[ParsedAttachment] = []
-    for part in message.walk():
+    for part in _own_parts(message):
+        if _content_type(part) == "message/rfc822":
+            out.append(_attached_email(part))
+            continue
         if part.is_multipart():
             continue
 
@@ -553,6 +702,38 @@ def _attachments(message: Message) -> list[ParsedAttachment]:
             )
         )
     return out
+
+
+def _attached_email(part: Message) -> ParsedAttachment:
+    """An attached message, kept as the attachment it is.
+
+    ``message/rfc822`` has no payload of its own to decode - the payload is an
+    already-parsed Message - so ``get_payload(decode=True)`` returns None and
+    the bytes have to come from re-serialising it.
+    """
+    filename, _ = decode_header_value(part.get_filename())
+    data: bytes | None = None
+    read_error: str | None = None
+
+    try:
+        payload = part.get_payload()
+        if isinstance(payload, list) and payload:
+            data = payload[0].as_bytes()
+    except Exception as exc:  # noqa: BLE001 - one attachment, not the message
+        read_error = f"{exc.__class__.__name__}: {exc}"
+
+    if data is None and read_error is None:
+        read_error = "the attached message had no readable content"
+
+    return ParsedAttachment(
+        filename=filename,
+        mime_type="message/rfc822",
+        size_bytes=len(data) if data else None,
+        data=data,
+        is_inline=False,
+        content_id=(part.get("Content-ID") or "").strip().strip("<>") or None,
+        read_error=read_error,
+    )
 
 
 def _raw_headers(message: Message) -> str:

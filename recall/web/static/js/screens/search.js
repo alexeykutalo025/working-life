@@ -5,6 +5,7 @@
 // somebody reading a decade of mail will, and they cost nothing to provide.
 
 import { api } from '../api.js';
+import { downloadWithProgress } from '../download.js';
 import {
   add, clear, date, debounce, el, empty, errorNotice, kindLabel, loading,
   mount, num, pager, plural, setTitle, tag,
@@ -1141,6 +1142,9 @@ function cellText(value) {
 
 function exportBar(total) {
   const status = el('div', { id: 'export-status' });
+  // The download has its own place to report from, outside the disclosure:
+  // a bar inside a closed <details> is a bar nobody sees.
+  const downloadStatus = el('div', { id: 'download-status' });
   const withAttachments = el('input', { type: 'checkbox' });
 
   const save = async (format) => {
@@ -1194,11 +1198,16 @@ function exportBar(total) {
 
   // The obvious action, on its own, outside the disclosure: one workbook
   // holding every kind of record, with the Integrity sheet in front of it.
+  //
+  // A button rather than a link, because the file has to be built before it
+  // can be handed over and that is a wait worth showing. See download.js.
   const downloadRow = el('div', { class: 'row mb-3' },
-    el('a', {
+    el('button', {
       class: 'btn btn--primary',
-      href: api.exportDownloadUrl(exportParams()),
-      download: '',
+      type: 'button',
+      onclick: (e) => downloadWithProgress(
+        e.target, { format: 'xlsx', ...exportParams() }, downloadStatus,
+      ),
     }, `Download these ${num(total)} results as Excel`),
     el('span', { class: 'muted' },
       'One workbook, a sheet for each kind of record, and a sheet saying what '
@@ -1229,7 +1238,7 @@ function exportBar(total) {
     status,
   );
 
-  return el('div', { class: 'search__export' }, downloadRow, more);
+  return el('div', { class: 'search__export' }, downloadRow, downloadStatus, more);
 }
 
 /** The current filters, in the shape both export routes expect. */

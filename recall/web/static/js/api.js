@@ -131,6 +131,12 @@ export const api = {
     return request('/api/search/table' + (q ? `?${q}` : ''));
   },
 
+  /** Start building a file and get back something to watch it with. */
+  exportPrepare: (params) =>
+    request('/api/export/search/prepare', { method: 'POST', body: JSON.stringify(params) }),
+  exportProgress: (token) =>
+    request(`/api/export/search/progress?token=${encodeURIComponent(token)}`),
+
   /** A download link, not a fetch: the browser saves the file itself. */
   exportDownloadUrl: (params = {}) => {
     const qs = new URLSearchParams();

@@ -47,6 +47,10 @@ _ROWS_FOR_KIND = {
     "note": (note_rows, NOTE_COLUMNS),
 }
 
+#: How often the gathering reports how far it has got. Often enough that the
+#: bar moves, rarely enough that it is not a call per record.
+_PROGRESS_EVERY = 250
+
 #: What each kind is called on a sheet tab and in a filename.
 KIND_SHEET_NAMES = {
     "message": "Messages",
@@ -75,8 +79,17 @@ def export_search(
     out_path: str | Path | None = None,
     copy_attachments: bool = False,
     limit: int = 100_000,
+    on_progress=None,
 ) -> dict[str, Any]:
-    """Export exactly what a search returned, with its own integrity statement."""
+    """Export exactly what a search returned, with its own integrity statement.
+
+    ``on_progress`` is for the caller that is keeping somebody informed while
+    this runs - the download the browser watches. It is called as
+    ``on_progress(done=..., total=..., message=..., current=...)``, and an
+    argument left out means "unchanged", because most calls are one more row
+    on the same total. Only the workbook reports; the other formats are
+    written a row at a time by a shared exporter and say nothing yet.
+    """
     from ..api.search import BadDate, month_bound
     from . import exporter_for
 
@@ -131,7 +144,7 @@ def export_search(
             query=query, person_id=person_id, source_id=source_id,
             folder_id=folder_id, tag=tag, has_attachments=has_attachments,
             undated=undated, date_from=date_from, date_to=date_to,
-            copy_attachments=copy_attachments,
+            copy_attachments=copy_attachments, on_progress=on_progress,
         )
 
     for item_kind in sorted(kinds_present):
@@ -216,7 +229,7 @@ def export_search(
 def _combined_workbook(
     conn, settings, base: Path, item_ids: list[int], kinds_present: list[str],
     *, query, person_id, source_id, folder_id, tag, has_attachments, undated,
-    date_from, date_to, copy_attachments,
+    date_from, date_to, copy_attachments, on_progress=None,
 ) -> dict[str, Any]:
     """Every kind in one workbook: Integrity first, then a sheet per kind.
 
@@ -240,6 +253,15 @@ def _combined_workbook(
     unexportable: list[dict[str, Any]] = []
     all_ids: list[int] = []
 
+    # Reading the records out is half the wait on a real archive, and it
+    # happens before a single cell is written. A bar that only started at the
+    # writing would stand still through it.
+    gathered = 0
+    if on_progress:
+        on_progress(
+            done=0, total=len(item_ids), message="Collecting the records..."
+        )
+
     for item_kind in sorted(kinds_present, key=_sheet_order):
         ids_of_kind = [
             int(r["id"])
@@ -259,9 +281,21 @@ def _combined_workbook(
             continue
 
         row_fn, columns = spec
-        rows = list(row_fn(
+        if on_progress:
+            on_progress(current=KIND_SHEET_NAMES.get(item_kind, item_kind))
+        rows = []
+        for row in row_fn(
             conn, where=f"i.id {IN_IDS}", params=[ids_param(ids_of_kind)]
-        ))
+        ):
+            rows.append(row)
+            gathered += 1
+            if on_progress and not gathered % _PROGRESS_EVERY:
+                on_progress(done=gathered)
+        if on_progress:
+            # The tail end of this kind, which the line above only reports on
+            # a round number. Without it a selection smaller than one report
+            # would show a bar sitting at nought for the whole of the wait.
+            on_progress(done=gathered)
         sections.append((KIND_SHEET_NAMES.get(item_kind, item_kind), columns, rows))
         all_ids.extend(int(r["id"]) for r in rows if r.get("id") is not None)
         per_kind.append({
@@ -296,7 +330,16 @@ def _combined_workbook(
     assert_not_onedrive(target.parent)
 
     statement = build_statement(conn, selection, len(all_ids), settings.db_path)
-    total = write_combined_workbook(sections, target, statement)
+    if on_progress:
+        # The exact figure, now the rows are in hand: what was on screen counts
+        # records, and a kind with no columns to write is not one of them.
+        on_progress(
+            done=0, total=sum(len(rows) for _, _, rows in sections),
+            current="", message="Writing the workbook...",
+        )
+    total = write_combined_workbook(
+        sections, target, statement, on_progress=on_progress
+    )
 
     if total != len(all_ids):
         raise ExportError(

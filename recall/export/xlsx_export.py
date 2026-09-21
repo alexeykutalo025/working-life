@@ -84,7 +84,7 @@ class XlsxExporter(Exporter):
         return written
 
 
-def write_combined_workbook(sections, out_path: Path, statement) -> int:
+def write_combined_workbook(sections, out_path: Path, statement, on_progress=None) -> int:
     """One workbook holding every kind of record, Integrity first.
 
     Messages, calendar entries, contacts, tasks and notes do not share a set of
@@ -94,6 +94,12 @@ def write_combined_workbook(sections, out_path: Path, statement) -> int:
     describes.
 
     ``sections`` is an iterable of (sheet name, columns, rows).
+
+    ``on_progress``, when given, is called as the rows go in, so that a browser
+    waiting on a large workbook can be told how far along it is. It is called
+    again for the save at the end with no total at all, because zipping the
+    workbook is one openpyxl call with nothing countable inside it, and a bar
+    that sits at 99% for a minute is a bar that has started lying.
     """
     xl = _openpyxl()
     workbook = xl.Workbook()
@@ -105,9 +111,19 @@ def write_combined_workbook(sections, out_path: Path, statement) -> int:
 
     total = 0
     for name, columns, rows in sections:
-        total += _write_records_sheet(workbook.create_sheet(name), columns, rows, xl)
+        # The count carried across sheets: the caller is counting records, not
+        # records-on-this-sheet, and a bar that restarted at each sheet would
+        # go backwards four times.
+        before = total
+        total += _write_records_sheet(
+            workbook.create_sheet(name), columns, rows, xl,
+            on_row=(lambda n, base=before: on_progress(done=base + n))
+            if on_progress else None,
+        )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    if on_progress:
+        on_progress(done=0, total=None, current="", message="Saving the file...")
     workbook.save(out_path)
     return total
 
@@ -144,13 +160,18 @@ _WRAPPED_COLUMNS = frozenset({
     "notes", "body", "body_preview", "data_quality", "attendees", "responses",
 })
 
+#: How often a long sheet reports how far it has got. Every row would be a
+#: call per cell-write for no visible difference; every thousand leaves a bar
+#: still for seconds at a time.
+_PROGRESS_EVERY = 250
+
 #: Tall enough for about three lines. Left to itself a wrapped cell makes the
 #: row as tall as its longest value, and one forty-line mail body would push
 #: every other record off the screen.
 _WRAPPED_ROW_HEIGHT = 46
 
 
-def _write_records_sheet(sheet, columns, rows, xl) -> int:
+def _write_records_sheet(sheet, columns, rows, xl, on_row=None) -> int:
     """One table of records: headings on row 1, records from row 2, nothing else."""
     sheet.append(_headings(columns))
 
@@ -194,6 +215,11 @@ def _write_records_sheet(sheet, columns, rows, xl) -> int:
                 cell.alignment = top
         if wrapped:
             sheet.row_dimensions[line].height = _WRAPPED_ROW_HEIGHT
+        if on_row is not None and not written % _PROGRESS_EVERY:
+            on_row(written)
+
+    if on_row is not None:
+        on_row(written)
 
     _add_table(sheet, len(columns), written, xl)
 
