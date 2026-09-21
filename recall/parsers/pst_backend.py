@@ -1,22 +1,26 @@
-"""Reading .pst and .ost, two ways, behind one interface.
+"""Reading .pst, two ways, behind one interface.
+
+``.ost`` is **not read here any more** - see ``OstParser`` at the foot of this
+module for what happens to one instead, and why.
 
 Spec section 2 requires two interchangeable backends:
 
 ``PyPffBackend``
     The default. Reads the file structure directly, needs no Outlook, and is
-    fast enough for hundreds of thousands of messages. It does not understand
-    modern OST encryption, and appointment fields live in named MAPI properties
-    whose ids differ per file, so it cannot always read a calendar.
+    fast enough for hundreds of thousands of messages. Appointment fields live
+    in named MAPI properties whose ids differ per file, so it cannot always
+    read a calendar.
 
 ``OutlookComBackend``
     Drives Microsoft Outlook itself: ``AddStore``, walk ``Folders``/``Items``,
     ``RemoveStore``. Slower by an order of magnitude, and authoritative -
-    Outlook understands every OST variant, every ANSI quirk, and appointment
-    fields by name rather than by guessed id.
+    Outlook understands every ANSI quirk and reads appointment fields by name
+    rather than by guessed id. Still needed for a .pst Outlook holds open, for
+    password-protected stores, and as the cross-check backend.
 
-Selection is automatic: pypff first; Outlook if pypff fails, or if the file is
-an ``.ost`` that yielded nothing. If both fail the source is marked ``failed``
-with the exact error and the run continues. A store never stops a run.
+Selection is automatic: pypff first; Outlook if pypff fails or yields nothing.
+If both fail the source is marked ``failed`` with the exact error and the run
+continues. A store never stops a run.
 
 Neither backend writes to the file. ``AddStore`` attaches a store to the Outlook
 profile read-only for the duration and ``RemoveStore`` detaches it in a finally
@@ -57,8 +61,10 @@ _SKIP_FOLDERS = {
 }
 
 
-#: Outlook data files, the only kind Outlook itself can be asked to read.
-OUTLOOK_STORE_EXTENSIONS = frozenset({".pst", ".ost"})
+#: Outlook data files Recall will ask Outlook to read. ``.ost`` is deliberately
+#: absent: Recall no longer reads one at all, so there is nothing to route to
+#: Outlook when Windows says the file is busy.
+OUTLOOK_STORE_EXTENSIONS = frozenset({".pst"})
 
 #: What Windows says when another program is holding a file open.
 _LOCK_MARKERS = ("PermissionError", "being used by another")
@@ -87,7 +93,7 @@ def looks_locked_by_outlook(ext: str | None, lock_error: str | None) -> bool:
 #: of the database without loading all of them first.
 LOCKED_BY_OUTLOOK_SQL = (
     "(is_readable = 0 AND is_placeholder = 0 "
-    "AND LOWER(ext) IN ('.pst', '.ost') "
+    "AND LOWER(ext) = '.pst' "
     "AND (lock_error LIKE '%PermissionError%' "
     "     OR lock_error LIKE '%being used by another%'))"
 )
@@ -1346,11 +1352,11 @@ class PstParser(Parser):
     """The parser the rest of the program uses. Picks a backend and may switch.
 
     The rule from the spec: try pypff; fall back to Outlook on failure, or when
-    an .ost yields nothing. If both fail the source is marked failed with the
-    exact error and the run carries on.
+    the first backend yields nothing. If both fail the source is marked failed
+    with the exact error and the run carries on.
     """
 
-    extensions = frozenset({".pst", ".ost"})
+    extensions = frozenset({".pst"})
     produces = frozenset({Kind.MESSAGE, Kind.EVENT, Kind.CONTACT, Kind.TASK, Kind.NOTE})
     name = "pst"
 
@@ -1427,8 +1433,7 @@ class PstParser(Parser):
                 return
 
             # Nothing at all came out. That is the documented signal to try the
-            # other backend - especially for .ost, which pypff often cannot
-            # read at all.
+            # other backend.
             last_error = backend.outcome.error or (
                 f"{backend.name} opened the file but could not read a single "
                 "record out of it"
@@ -1485,3 +1490,65 @@ class PstParser(Parser):
         if self._backend is not None:
             self._backend.close()
             self._backend = None
+
+
+@register
+class OstParser(Parser):
+    """Identifies an Outlook offline store and declines to read it.
+
+    An ``.ost`` is the local cache of a mailbox that lives on a mail server.
+    Recall finds these files, records them with their size and location, and
+    does not read what is inside them.
+
+    Nothing about the file is written or altered. A .pst is unaffected and is
+    still read by ``PstParser`` exactly as before.
+
+    Worth knowing when reading this: an .ost is where a modern Outlook keeps
+    everything. An Exchange or Microsoft 365 account in cached mode holds the
+    whole mailbox here, and a .pst exists only if somebody exported one. So on
+    most current machines this is the file with the mail in it, and skipping it
+    means skipping the mailbox. The ``orphaned_ost`` check in
+    ``integrity.sources`` still runs and still says when one of these may be
+    the last surviving copy of an account's mail.
+    """
+
+    extensions = frozenset({".ost"})
+    produces = frozenset({Kind.MESSAGE, Kind.EVENT, Kind.CONTACT, Kind.TASK, Kind.NOTE})
+    name = "ost"
+
+    def parse(self, kinds: frozenset[str] | None = None) -> Iterator[ParsedItem]:
+        if kinds is not None and not (kinds & self.produces):
+            return
+
+        try:
+            size = self.path.stat().st_size
+        except OSError as exc:
+            self.outcome.error = f"could not be opened: {exc}"
+            self.outcome.error_detail = repr(exc)
+            return
+
+        log.info("%s is an .ost; Recall does not read this format", self.path.name)
+
+        self.outcome.error = (
+            "Outlook offline data files (.ost) are not read by Recall. The file "
+            "has been found and recorded, but nothing has been taken from it."
+        )
+        self.outcome.add_finding(
+            "read_failure",
+            "high",
+            f"{self.path.name} is an Outlook offline file that Recall does not read",
+            "This is an .ost - the copy Outlook keeps on this computer of a "
+            "mailbox that lives on a mail server. Recall finds these files but "
+            "does not read them, so any mail, calendar entries or contacts "
+            "inside are not in your archive.\n\n"
+            "This matters more than it sounds: if this computer uses Exchange "
+            "or Microsoft 365, the .ost is where all of your mail is kept, and "
+            "a .pst only exists if somebody exported one deliberately.\n\n"
+            "What to do: open Outlook, then File > Open & Export > Import/Export "
+            "> Export to a file > Outlook Data File (.pst). Recall reads the "
+            ".pst that produces, in full.\n\n"
+            "The file has not been changed - Recall never writes to your files.",
+            {"path": str(self.path), "size_bytes": size},
+        )
+        return
+        yield  # pragma: no cover - makes this a generator, as the interface requires

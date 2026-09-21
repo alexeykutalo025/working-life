@@ -10,6 +10,11 @@ import pytest
 from recall.models import Kind, Role
 from recall.parsers.base import parser_for
 from recall.parsers.dbx import DbxParser
+from recall.parsers.pst_backend import (
+    OstParser,
+    PstParser,
+    looks_locked_by_outlook,
+)
 from recall.parsers.eml import (
     EmlParser,
     MboxParser,
@@ -310,6 +315,91 @@ def test_dbx_is_never_written_to(tmp_path: Path):
     before = p.read_bytes()
     parse(p, DbxParser)
     assert p.read_bytes() == before
+
+
+# --- .ost: found and listed, never read ------------------------------------
+#
+# An .ost is the local cache of a server mailbox. Recall finds these and does
+# not read them.
+#
+# This one is worth being careful about in a way .dbx is not. No defect was
+# ever found in the OST reader - it was removed by request - and on a machine
+# using Exchange or Microsoft 365 the .ost holds the entire mailbox, with a
+# .pst existing only if somebody exported one. So these tests pin two things:
+# that an .ost is still found and still accounted for, and that .pst reading is
+# completely untouched by its removal.
+
+OST_HEADER = b"!BDN" + b"\x00" * 8192
+
+
+def write_ost(path: Path) -> Path:
+    path.write_bytes(OST_HEADER)
+    return path
+
+
+def test_ost_is_still_recognised_as_a_file_recall_knows(tmp_path: Path):
+    assert parser_for(write_ost(tmp_path / "outlook.ost")) is OstParser
+
+
+def test_ost_yields_nothing(tmp_path: Path):
+    assert parse(write_ost(tmp_path / "outlook.ost"), OstParser) == []
+
+
+def test_ost_says_it_will_not_read_the_file(tmp_path: Path):
+    p = write_ost(tmp_path / "outlook.ost")
+    with OstParser(p) as parser:
+        assert list(parser.parse()) == []
+        assert parser.outcome.error
+        assert "not read" in parser.outcome.error
+
+        finding = next(f for f in parser.outcome.findings if f[0] == "read_failure")
+        assert "outlook.ost" in finding[2]
+        # The user has to be told the way out, and told what it costs them not
+        # to take it - on most machines this file is the whole mailbox.
+        assert ".pst" in finding[3]
+        assert "Microsoft 365" in finding[3]
+
+
+def test_ost_does_not_invent_a_loss_it_cannot_measure(tmp_path: Path):
+    with OstParser(write_ost(tmp_path / "outlook.ost")) as parser:
+        list(parser.parse())
+        assert parser.outcome.claimed_count is None
+        assert parser.outcome.estimated_loss is None
+
+
+def test_ost_still_reports_on_a_calendar_only_run(tmp_path: Path):
+    """An .ost can hold a calendar, so a calendar run must still say so."""
+    with OstParser(write_ost(tmp_path / "outlook.ost")) as parser:
+        assert list(parser.parse(frozenset({Kind.EVENT}))) == []
+        assert any(f[0] == "read_failure" for f in parser.outcome.findings)
+
+
+def test_ost_is_never_written_to(tmp_path: Path):
+    p = write_ost(tmp_path / "outlook.ost")
+    before = p.read_bytes()
+    parse(p, OstParser)
+    assert p.read_bytes() == before
+
+
+# --- .pst must be entirely unaffected by the .ost removal ------------------
+
+
+def test_pst_is_still_read_by_the_pst_parser(tmp_path: Path):
+    p = tmp_path / "mail.pst"
+    p.write_bytes(OST_HEADER)
+    assert parser_for(p) is PstParser
+
+
+def test_the_pst_parser_no_longer_claims_ost(tmp_path: Path):
+    assert PstParser.extensions == frozenset({".pst"})
+    assert ".ost" not in PstParser.extensions
+
+
+def test_a_busy_pst_still_goes_to_outlook():
+    """The COM route survives: it is still needed for a .pst Outlook holds."""
+    assert looks_locked_by_outlook(
+        ".pst", "PermissionError: [Errno 13] Permission denied"
+    )
 
 
 # --- .mbx -----------------------------------------------------------------

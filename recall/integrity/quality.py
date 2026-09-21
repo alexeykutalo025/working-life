@@ -267,9 +267,11 @@ def _check_orphan_replies(conn, settings) -> int:
                         "A few of these are normal - the other side of a "
                         "conversation was simply never in this mailbox.\n\n"
                     )
-                    + "What to do: look for another .pst or .ost from the same "
-                    "period, particularly a Sent Items store or a mailbox from a "
-                    "different account.\n\n"
+                    + "What to do: look for another .pst from the same period, "
+                    "particularly a Sent Items store or a mailbox from a "
+                    "different account. An .ost may hold it too, but Recall "
+                    "does not read those - export one to a .pst from Outlook "
+                    "first.\n\n"
                     f"Examples:\n{examples}"
                 ),
                 source_file_id=source_id,

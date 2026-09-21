@@ -101,6 +101,12 @@ class NoteRequest(BaseModel):
     note: str
 
 
+class ResetRequest(BaseModel):
+    """Emptying the archive. ``confirm`` is sent only after the plan was shown."""
+
+    confirm: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Where to look
 # ---------------------------------------------------------------------------
@@ -918,3 +924,148 @@ def extract_plan(request: Request, ids: str = "") -> dict[str, Any]:
             "any time and carry on later."
         ),
     }
+
+
+# ---------------------------------------------------------------------------
+# Starting again from nothing
+# ---------------------------------------------------------------------------
+
+
+@router.get("/reset/plan")
+def reset_plan(request: Request) -> dict[str, Any]:
+    """What starting again would destroy. Destroys nothing.
+
+    The same rule the download dialog works to: the number comes first, and
+    the agreement is given against the number. Emptying the archive is the one
+    thing in Recall that cannot be undone, so it gets the fullest count of the
+    lot.
+    """
+    conn = _conn(request)
+    settings = _settings(request)
+
+    sources = conn.execute(
+        "SELECT COUNT(*) AS n, COALESCE(SUM(size_bytes), 0) AS bytes, "
+        "SUM(CASE WHEN local_copy_path IS NOT NULL THEN 1 ELSE 0 END) AS copies, "
+        "COALESCE(SUM(CASE WHEN local_copy_path IS NOT NULL "
+        "               THEN local_copy_bytes ELSE 0 END), 0) AS copy_bytes "
+        "FROM source_files"
+    ).fetchone()
+
+    items = conn.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+    people = conn.execute(
+        "SELECT COUNT(*) AS n FROM people WHERE merged_into IS NULL"
+    ).fetchone()["n"]
+    attachments = conn.execute("SELECT COUNT(*) AS n FROM attachments").fetchone()["n"]
+    eras = conn.execute("SELECT COUNT(*) AS n FROM eras").fetchone()["n"]
+    explained = conn.execute(
+        "SELECT COUNT(*) AS n FROM findings WHERE state IN ('explained','acknowledged')"
+    ).fetchone()["n"]
+
+    found = int(sources["n"] or 0)
+    copies = int(sources["copies"] or 0)
+
+    return {
+        "files_found": found,
+        "files_bytes": int(sources["bytes"] or 0),
+        "records": int(items or 0),
+        "people": int(people or 0),
+        "attachments": int(attachments or 0),
+        # Work the user did by hand, which is the part no second run brings
+        # back: an era is typed in, and an explanation is somebody's own words
+        # about a gap in their own life.
+        "eras": int(eras or 0),
+        "explanations": int(explained or 0),
+        "copies": copies,
+        "copies_bytes": int(sources["copy_bytes"] or 0),
+        "space_bytes": _reset_space(settings),
+        "workdir": str(settings.workdir_path),
+        "is_empty": found == 0 and int(items or 0) == 0,
+        "sentence": (
+            "There is nothing in the archive yet, so there is nothing to delete."
+            if found == 0 and not items
+            else f"This empties the archive completely: {found:,} file(s) found "
+            f"and {int(items or 0):,} record(s) read out of them. Your original "
+            "Outlook files are not touched — Recall only ever read them."
+        ),
+    }
+
+
+@router.post("/reset")
+def reset_archive(request: Request, body: ResetRequest) -> dict[str, Any]:
+    """Empty the archive completely. Requires confirm=true, after the plan."""
+    if not body.confirm:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Nothing was deleted, because this request did not carry your "
+                "agreement. Open the Files found screen and use the button there."
+            ),
+        )
+
+    # A job writing into tables that are being emptied underneath it would
+    # leave half an archive and no way to tell which half.
+    if JOBS.running:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Something is still running. Stop it and wait for it to finish, "
+                "then start again from nothing."
+            ),
+        )
+
+    from ..reset import reset_everything
+
+    settings = _settings(request)
+    deleted = reset_everything(_conn(request), settings)
+    JOBS.forget()
+    log.info("Archive emptied from the web page")
+
+    return {
+        "reset": True,
+        "deleted": deleted,
+        "sentence": _reset_sentence(deleted),
+    }
+
+
+def _reset_space(settings: Settings) -> int:
+    """Roughly what emptying the archive frees: the database and both folders.
+
+    The write-ahead log counts. It is routinely several times the size of the
+    database it belongs to, and leaving it out of the figure would understate
+    what the user gets back by most of it.
+    """
+    total = 0
+    paths = [
+        settings.db_path,
+        Path(str(settings.db_path) + "-wal"),
+        Path(str(settings.db_path) + "-shm"),
+        settings.blobs_path,
+        settings.cloud_path,
+    ]
+    for path in paths:
+        try:
+            if path.is_dir():
+                total += sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+            elif path.exists():
+                total += path.stat().st_size
+        except OSError:
+            # A file that vanished while this was counting is one this is about
+            # to delete anyway. Never fail a size estimate over it.
+            continue
+    return total
+
+
+def _reset_sentence(deleted: dict[str, int]) -> str:
+    parts = [
+        f"{deleted['sources']:,} file(s) found",
+        f"{deleted['items']:,} record(s)",
+        f"{deleted['attachments']:,} saved attachment(s)",
+    ]
+    if deleted["copies"]:
+        parts.append(
+            f"{deleted['copies']:,} file(s) Recall had downloaded from OneDrive"
+        )
+    return (
+        "The archive is empty: deleted " + ", ".join(parts) + ". Your original "
+        "Outlook files were not touched. Search this computer again to start over."
+    )

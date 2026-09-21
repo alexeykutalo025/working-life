@@ -41,7 +41,7 @@ _LIBRARIES: list[tuple[str, str, str, bool]] = [
     ("uvicorn", "uvicorn", "the local web server", True),
     ("typer", "typer", "these commands", True),
     ("pydantic", "pydantic", "settings and checking", True),
-    ("pypff", "libpff-python", "reading .pst and .ost quickly", False),
+    ("pypff", "libpff-python", "reading .pst files quickly", False),
     ("extract_msg", "extract-msg", "reading .msg files", False),
     ("icalendar", "icalendar", "reading .ics calendar files", False),
     ("vobject", "vobject", "reading .vcs calendars and .vcf contacts", False),
@@ -128,8 +128,9 @@ def check_libraries() -> list[Check]:
 def check_outlook_com() -> Check:
     """Is Microsoft Outlook installed and driveable?
 
-    This is the authoritative reader for .pst/.ost. Without it, modern .ost
-    files and password-protected stores may be unreadable.
+    This is the authoritative reader for .pst. Without it, a .pst that Outlook
+    is holding open, and password-protected stores, may be unreadable. It is
+    also the backend the cross-check compares against.
 
     The check is on a deadline. Outlook can sit forever behind an invisible
     dialog, and a setup check that never returns is worse than a clear "no".
@@ -149,14 +150,16 @@ def check_outlook_com() -> Check:
             "Microsoft Outlook (COM)",
             WARN,
             "pywin32 is not installed, so Outlook cannot be used as a reader. "
-            ".ost files may be unreadable. Install with: pip install pywin32",
+            "A .pst that Outlook is holding open may be unreadable. Install "
+            "with: pip install pywin32",
         )
     if not is_outlook_registered():
         return Check(
             "Microsoft Outlook (COM)",
             WARN,
-            "Outlook is not installed on this computer. The fast built-in reader "
-            "will be used for .pst; some .ost files may be unreadable.",
+            "Outlook is not installed on this computer. The fast built-in "
+            "reader will be used for .pst; a .pst another program is holding "
+            "open may be unreadable.",
         )
     try:
         version = outlook_version()

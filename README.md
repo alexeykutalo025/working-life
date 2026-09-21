@@ -48,8 +48,8 @@ At the end it prints a table. Read it. Every line says PASS, WARN or FAIL:
 - **FAIL** — something is genuinely broken and the line says what to do about
   it. Fix those, then run `setup.bat` again.
 
-One WARN you may see is about **libpff-python**, which reads `.pst` and `.ost`
-files quickly. It is published as source code rather than as a ready-made
+One WARN you may see is about **libpff-python**, which reads `.pst` files
+quickly. It is published as source code rather than as a ready-made
 package, so it sometimes will not install. Recall works without it: Microsoft
 Outlook itself is used to read those files instead. That is slower, and it
 actually reads *more* file types correctly.
@@ -146,6 +146,14 @@ A folder that Windows normally skips — `Windows`, `Program Files` and a few
 others — *is* searched when you choose it by hand, and the chooser says so.
 Those folders are skipped during a whole-drive search only because they waste
 time, not because they are forbidden.
+
+At the very foot of the page, folded away, is **"Start again from nothing"**.
+It empties Recall completely — the list of files, everything read out of them,
+the people, the periods you named and the explanations you wrote. It first
+shows you exactly what would go and how much space it frees, and then asks you
+to type `DELETE EVERYTHING` before it will do it. Nothing goes to the Recycle
+Bin and there is no way back from it other than searching and reading again.
+Your own Outlook files are never touched; Recall has only ever read them.
 
 ### Search
 One large box. Type anything you remember.
@@ -282,7 +290,7 @@ click for when you need to send it to somebody.
 | **could not be opened, so nothing in it has been read** | Another program is holding the file — usually Outlook. Close Outlook completely and search again. |
 | **about N records could not be read out of M** | The file says how much it holds; Recall got less. Data is missing. Try **Read that file again with the other reader**. |
 | **is password-protected** | The file was locked when it was made. Recall will not try to break it. Open it in Outlook once, let Outlook remember the password, then retry. |
-| **belongs to an email account this computer no longer has** | An `.ost` with no matching account. It may be the only copy of that mail left. Outlook is the only thing that reads these properly, and Recall tries it automatically. |
+| **belongs to an email account this computer no longer has** | An `.ost` with no matching account. It may be the only copy of that mail left. Recall does not read `.ost` files: attach it in Outlook and export a `.pst`. |
 | **is not the kind of file its name says it is** | The name says `.pst`, the contents say otherwise. It may have been renamed by hand, or damaged at the start. |
 | **is empty** or **too small to be a real ...** | Almost always a copy that failed part-way. |
 | **has N folders but not one message came out** | Much more likely a reading failure than an empty mailbox. |
@@ -466,8 +474,7 @@ Recall is honest about the difference between what it knows and what it is
 guessing at.
 
 **Read properly and completely:**
-`.pst`, `.ost`, `.msg`, `.eml`, `.mbox`, `.ics`, `.vcs`, `.vcf`, `.olm`,
-`.mbx`.
+`.pst`, `.msg`, `.eml`, `.mbox`, `.ics`, `.vcs`, `.vcf`, `.olm`, `.mbx`.
 
 **Best-effort, and it tells you so on the record:**
 
@@ -492,9 +499,17 @@ guessing at.
   To recover the messages, import the file into Outlook Express or Windows Mail
   on an older machine and export to Outlook, which produces a `.pst` that
   Recall reads properly.
+- **`.ost`** (Outlook offline data file) — **found and listed, not read.**
+  An `.ost` is the copy Outlook keeps on this computer of a mailbox that lives
+  on a mail server. Recall finds these files and records them, but takes
+  nothing out of them. Be aware of what this costs: if this computer uses
+  Exchange or Microsoft 365, the `.ost` is where all of your mail is, and a
+  `.pst` exists only if somebody exported one deliberately. To archive that
+  mail, open Outlook and use File > Open & Export > Import/Export > Export to
+  a file > Outlook Data File (.pst); Recall reads the result in full.
 - **Reading text out of scanned images** (OCR) — off by default. It needs
   Tesseract installed separately and is slow.
-- **Repeating calendar entries from `.pst`/`.ost`** — Outlook stores the repeat
+- **Repeating calendar entries from `.pst`** — Outlook stores the repeat
   rule in a packed form only Outlook reads. The fast reader shows the first
   occurrence and says so. Reading the file with Outlook recovers the full rule.
 

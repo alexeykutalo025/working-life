@@ -92,6 +92,12 @@ export const api = {
       body: JSON.stringify({ ids, confirm: true }),
     }),
 
+  // Emptying the archive. The plan is read first and the reset carries the
+  // agreement, the same way downloading does.
+  resetPlan: () => request('/api/reset/plan'),
+  resetArchive: () =>
+    request('/api/reset', { method: 'POST', body: JSON.stringify({ confirm: true }) }),
+
   // Find, download and read, as one pass.
   readAllPlan: () => request('/api/readall/plan'),
   readAll: (options) =>

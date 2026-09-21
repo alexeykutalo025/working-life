@@ -65,6 +65,65 @@ def reset_items(settings: Settings) -> str:
     )
 
 
+#: What a full reset removes on top of the extracted records: the inventory of
+#: files found, and the things the user set up around it.
+_INVENTORY_TABLES = [
+    "tags",
+    "eras",
+    "settings",
+    "source_files",
+    "scan_runs",
+]
+
+
+def reset_everything(conn, settings: Settings) -> dict[str, int]:
+    """Empty the whole archive through a connection that stays open.
+
+    ``reset_all`` deletes the database file, which the web server cannot do:
+    Windows will not unlink a file that the server's own connections still
+    hold open, and a connection left pointing at a deleted archive is worse
+    than the refusal. So the same job is done by emptying every table, and the
+    connection the caller handed in goes on working afterwards.
+    """
+    tables = _ITEM_TABLES + _INVENTORY_TABLES
+    counts = {t: _count(conn, t) for t in tables}
+
+    with db_module.transaction(conn):
+        # No ordering of these tables satisfies every foreign key on the way
+        # through: findings point at items, items at folders, folders back at
+        # source_files, and findings at source_files again. Whichever goes
+        # first leaves a reference dangling for the length of one statement.
+        # Deferring the check to the commit - by which time every row is gone
+        # - is what makes emptying the lot possible at all.
+        conn.execute("PRAGMA defer_foreign_keys = ON")
+        for table in tables:
+            conn.execute(f"DELETE FROM {table}")
+
+    conn.execute("INSERT INTO items_fts(items_fts) VALUES ('rebuild')")
+    try:
+        conn.execute("VACUUM")
+    except Exception:  # reclaiming the space is not the point of this
+        # Another connection reading at that moment holds the exclusive lock
+        # off. The archive is empty either way; only the size of the file on
+        # disk is left behind, and the next VACUUM will get it.
+        log.warning("Could not reclaim disk space after the reset", exc_info=True)
+
+    blobs = _empty_blobs(settings.blobs_path)
+    copies = _empty_blobs(settings.cloud_path)
+
+    log.info(
+        "reset everything: removed %d sources, %d items, %d attachment files, "
+        "%d downloaded copies",
+        counts["source_files"], counts["items"], blobs, copies,
+    )
+    return {
+        "sources": counts["source_files"],
+        "items": counts["items"],
+        "attachments": blobs,
+        "copies": copies,
+    }
+
+
 def reset_all(settings: Settings) -> str:
     """Delete the whole archive, including the inventory."""
     conn = db_module.connect(settings.db_path)

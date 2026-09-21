@@ -108,7 +108,8 @@ batch_size = 1000
 # way to check that a file reads correctly before committing to a long run.
 sample_limit = 0
 
-# Preferred reader for .pst and .ost files: "auto", "pypff" or "com".
+# Preferred reader for .pst files: "auto", "pypff" or "com".
+# (.ost files are found and listed, but not read - see the README.)
 #   auto  - try the fast built-in reader, fall back to Outlook if it struggles
 #   pypff - only the fast built-in reader
 #   com   - only Microsoft Outlook itself (slower, but it understands everything)

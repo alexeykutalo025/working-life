@@ -189,6 +189,17 @@ class JobManager:
             self._thread.start()
             return self.status
 
+    def forget(self) -> None:
+        """Drop the finished job's result. Refused while one is running.
+
+        The screen redraws the last job every time it is opened, so after the
+        archive is emptied it would go on reporting "found 1,247 files" about
+        files that no longer exist anywhere in Recall.
+        """
+        if self.running:
+            raise JobBusy("Something is still running.")
+        self.status = JobStatus()
+
     # -- progress reporting, called from inside the job -------------------
 
     def progress(

@@ -244,8 +244,10 @@ def _check_orphaned_ost(conn) -> int:
                     "copied here from another machine. It matters because if the "
                     "server mailbox is gone, this file may be the only copy of "
                     "that mail left.\n\n"
-                    "Microsoft Outlook is the only reliable way to read a "
-                    "detached .ost. Recall will try it automatically.\n\n"
+                    "Recall does not read .ost files, so nothing from this one "
+                    "is in your archive. Microsoft Outlook is the only reliable "
+                    "way to read a detached .ost: attach it to a profile, then "
+                    "export a .pst, which Recall reads in full.\n\n"
                     f"Outlook profiles found on this computer reference: "
                     f"{', '.join(sorted({os.path.basename(p) for p in profiles})) or 'no data files'}"
                 ),

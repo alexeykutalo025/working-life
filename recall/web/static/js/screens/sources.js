@@ -52,6 +52,7 @@ export async function render({ params } = {}) {
     el('div', { id: 'job' }),
     el('div', { id: 'controls' }),
     el('div', { id: 'table' }, loading('Loading the list')),
+    el('div', { id: 'start-again' }),
   );
   mount(root);
 
@@ -226,6 +227,170 @@ function renderControls() {
 
     el('div', { class: 'btn-row mb-5', id: 'selection-actions' }),
   );
+
+  renderStartAgain();
+}
+
+// --- starting again from nothing ------------------------------------------
+//
+// Folded away at the foot of the page, under its own heading, because it is
+// the one thing here that cannot be undone. Everything else on this screen
+// adds; this is the only button that takes away.
+
+function renderStartAgain() {
+  const host = document.getElementById('start-again');
+  if (!host) return;
+  clear(host);
+
+  host.append(el('details', { class: 'mt-5' },
+    el('summary', {}, 'Start again from nothing'),
+    el('div', { class: 'stack mt-3' },
+      el('p', { class: 'mb-0' },
+        'This empties Recall completely — the list above, everything read out ' +
+        'of those files, the people, and anything you have written down about ' +
+        'them. Your own Outlook files are not touched; Recall only ever read ' +
+        'them, and it can find them again.'),
+      el('button', {
+        class: 'btn btn--danger',
+        type: 'button',
+        disabled: jobRunning ? true : null,
+        onclick: openResetDialog,
+      }, 'Empty the archive and start again'),
+      jobRunning
+        ? el('p', { class: 'muted small mb-0' },
+            'Something is running. Wait for it to finish, or stop it first.')
+        : null,
+    ),
+  ));
+}
+
+async function openResetDialog() {
+  let plan;
+  try {
+    plan = await api.resetPlan();
+  } catch (err) {
+    errorDialog(err);
+    return;
+  }
+
+  if (plan.is_empty) {
+    const nothing = modal({
+      title: 'There is nothing to empty',
+      body: el('p', {},
+        'Recall has not found or read anything yet, so there is nothing here ' +
+        'to delete.'),
+      actions: [
+        el('button', {
+          class: 'btn btn--primary', type: 'button', onclick: () => nothing.close(),
+        }, 'Close'),
+      ],
+    });
+    return;
+  }
+
+  // The same rule the download dialog works to, turned round: the cost is
+  // shown first, and the agreement is given against the cost. Typing the words
+  // is what the command line asks for, and it is asked for here for the same
+  // reason - a misplaced click should not be able to do this.
+  const WORD = 'DELETE EVERYTHING';
+  const typed = el('input', {
+    type: 'text',
+    autocomplete: 'off',
+    spellcheck: 'false',
+    placeholder: WORD,
+  });
+  const confirm = el('button', {
+    class: 'btn btn--danger', type: 'button', disabled: true,
+  }, 'Delete everything');
+
+  typed.oninput = () => {
+    confirm.disabled = typed.value.trim().toUpperCase() !== WORD;
+  };
+
+  const body = el('div', { class: 'stack' },
+    notice('error', 'This cannot be undone',
+      'Nothing here goes to the Recycle Bin, and there is no way back from it ' +
+      'other than searching and reading everything again.'),
+
+    el('p', {}, plan.sentence),
+
+    el('div', { class: 'grid grid--4' },
+      stat('Files found', num(plan.files_found), 'the list goes'),
+      stat('Records read', num(plan.records), 'mail, calendar, contacts'),
+      stat('People', num(plan.people), null),
+      stat('Space freed', bytes(plan.space_bytes), null),
+    ),
+  );
+
+  // Work the user did by hand comes back to nothing, and no second run
+  // recovers it. Said separately from the counts above, because it is the part
+  // that is genuinely theirs.
+  if (plan.eras || plan.explanations) {
+    const parts = [];
+    if (plan.eras) parts.push(`${plural(plan.eras, 'period')} of your life you named`);
+    if (plan.explanations) {
+      parts.push(`${plural(plan.explanations, 'explanation')} you wrote for a gap`);
+    }
+    add(body, notice('warning', 'Your own words go too',
+      `This deletes ${parts.join(' and ')}. Reading the files again will not ` +
+      'bring those back — only you know them.'));
+  }
+
+  if (plan.copies) {
+    add(body, notice('warning',
+      `${plural(plan.copies, 'file')} downloaded from OneDrive`,
+      `Recall has its own copies of these, ${bytes(plan.copies_bytes)} in all. ` +
+      'They go as well, so getting them back means downloading them again.'));
+  }
+
+  add(body,
+    el('p', { class: 'mb-0' },
+      el('strong', {}, 'Your original Outlook files are not touched. '),
+      'Recall has only ever read them. Everything deleted here is inside ' +
+      'Recall’s own working folder:'),
+    el('pre', { class: 'raw' }, plan.workdir),
+    field(`Type  ${WORD}  to confirm`, typed,
+      'Deliberately awkward. Nothing is deleted until those words are right.'),
+  );
+
+  const dialog = modal({
+    title: 'Empty the archive and start again?',
+    body,
+    actions: [
+      confirm,
+      el('button', { class: 'btn btn--primary', type: 'button', onclick: () => dialog.close() },
+        'Keep everything'),
+    ],
+  });
+
+  confirm.onclick = async () => {
+    confirm.disabled = true;
+    confirm.textContent = 'Emptying…';
+    typed.disabled = true;
+    let result;
+    try {
+      result = await api.resetArchive();
+    } catch (err) {
+      dialog.close();
+      errorDialog(err);
+      return;
+    }
+    dialog.close();
+
+    // Every number on the screen is now wrong, so all of it is drawn again
+    // rather than patched. The selection goes with it: those files no longer
+    // exist to be ticked.
+    state.selected.clear();
+    state.filters = {};
+    renderControls();
+    const job = document.getElementById('job');
+    if (job) {
+      clear(job);
+      job.append(notice('good', 'The archive is empty', result.sentence));
+    }
+    await refreshSummary();
+    await reload();
+  };
 }
 
 // --- find, download and read, in one pass ---------------------------------

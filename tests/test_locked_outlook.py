@@ -27,12 +27,15 @@ IN_USE = "OSError: the file is being used by another process"
 # (extension, lock_error, should Outlook be asked)
 CASES = [
     (".pst", PERMISSION, True),
-    (".ost", PERMISSION, True),
     (".PST", IN_USE, True),
     # Outlook cannot help with a format it does not own.
     (".mbox", PERMISSION, False),
     (".dbx", IN_USE, False),
     (".msg", PERMISSION, False),
+    # Recall does not read .ost at all, so a busy one has nothing to route:
+    # unlocking it would only get it as far as a reader that declines it.
+    (".ost", PERMISSION, False),
+    (".ost", IN_USE, False),
     # Broken, not busy. Sending this to Outlook spends two minutes finding out
     # what the error already said.
     (".pst", "OSError: [Errno 5] Input/output error", False),
